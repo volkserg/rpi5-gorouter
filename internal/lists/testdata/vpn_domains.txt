@@ -1,0 +1,26 @@
+# Список доменов и IP-адресов для маршрутизации через туннель
+# Формат: по одной записи на строку
+#   - Домены: example.com (покрывает и поддомены)
+#   - IP-адреса: 1.2.3.4
+#   - Подсети (CIDR): 1.2.3.0/24
+# Добавляйте/удаляйте записи через команды:
+#   router_service_ctl add-vpn-domain <domain>
+#   router_service_ctl remove-vpn-domain <domain>
+#   router_service_ctl add-vpn-ip <ip|cidr>
+#   router_service_ctl remove-vpn-ip <ip|cidr>
+#   router_service_ctl load-vpn-domains <file>   # только домены
+#   router_service_ctl load-vpn-ips <file>       # только IP/CIDR
+
+# Внутренние сервисы компании
+corp.example.com
+git.corp.example.com
+wiki.corp.example.com
+jira.corp.example.com
+
+# Репозитории и CI
+registry.corp.example.net
+ci.corp.example.net
+
+# Офисные подсети
+10.20.0.0/16
+192.0.2.10

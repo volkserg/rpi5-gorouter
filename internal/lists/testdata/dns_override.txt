@@ -1,0 +1,13 @@
+# DNS override forwarding rules
+# Format: domain.name upstream_dns[:port]
+#
+# These domains are resolved directly by the specified upstream DNS,
+# bypassing the default Pi-hole → dnscrypt-proxy chain.
+#
+# Use case: internal zones served by a dedicated (e.g. corporate) DNS server.
+#
+# Examples:
+#   corp.example.com 10.20.0.53
+#   example.org      1.1.1.1
+
+corp.example.com 10.20.0.53

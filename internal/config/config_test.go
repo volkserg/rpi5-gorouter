@@ -1,0 +1,157 @@
+package config
+
+import (
+	"net/netip"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestParseAssignments(t *testing.T) {
+	in := `
+# комментарий
+IFACE=eth1
+export NM_CONN="my conn"
+ROUTER_IP='10.0.0.1'   # хвостовой комментарий
+RPI5_IP=10.0.0."2"
+DNS1="1.1.1.1"
+EMPTY=
+`
+	got, err := ParseAssignments(strings.NewReader(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"IFACE": "eth1", "NM_CONN": "my conn", "ROUTER_IP": "10.0.0.1",
+		"RPI5_IP": "10.0.0.2", "DNS1": "1.1.1.1", "EMPTY": "",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d assignments, want %d: %+v", len(got), len(want), got)
+	}
+	for _, a := range got {
+		if want[a.Key] != a.Value {
+			t.Errorf("%s = %q, want %q", a.Key, a.Value, want[a.Key])
+		}
+	}
+}
+
+func TestParseAssignmentsRejects(t *testing.T) {
+	for _, in := range []string{
+		"IFACE=$OTHER",
+		`IFACE="${X}"`,
+		"IFACE=`hostname`",
+		"IFACE=eth0; rm -rf /",
+		"IFACE=eth 0",
+		`IFACE="eth0`,
+		"IFACE='eth0",
+		"1FACE=eth0",
+		"IFACE =eth0",
+		"just a command",
+	} {
+		if _, err := ParseAssignments(strings.NewReader(in)); err == nil {
+			t.Errorf("%q: ожидалась ошибка", in)
+		}
+	}
+}
+
+func TestDefaultsMatchReference(t *testing.T) {
+	cfg, err := FromValues(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Iface != "eth0" || cfg.NMConn != "netplan-eth0" ||
+		cfg.RouterIP.String() != "192.168.3.1" || cfg.RPi5IP.String() != "192.168.3.2" ||
+		cfg.LANSubnet.String() != "192.168.3.0/24" ||
+		cfg.PoolStart.String() != "192.168.3.100" || cfg.PoolEnd.String() != "192.168.3.250" ||
+		len(cfg.DNS) != 2 || cfg.DNS[0].String() != "1.1.1.1" || cfg.DNS[1].String() != "8.8.8.8" {
+		t.Errorf("дефолты не совпадают с bash: %+v", cfg)
+	}
+}
+
+func TestDerived(t *testing.T) {
+	for _, tc := range []struct {
+		subnet, router, rpi, start, end string
+		mask, bcast                     string
+	}{
+		{"192.168.3.0/24", "192.168.3.1", "192.168.3.2", "192.168.3.100", "192.168.3.250", "255.255.255.0", "192.168.3.255"},
+		{"10.10.0.0/16", "10.10.0.1", "10.10.0.2", "10.10.1.0", "10.10.1.255", "255.255.0.0", "10.10.255.255"},
+		{"192.168.4.0/23", "192.168.4.1", "192.168.4.2", "192.168.5.0", "192.168.5.200", "255.255.254.0", "192.168.5.255"},
+		{"172.16.0.0/30", "172.16.0.1", "172.16.0.2", "172.16.0.1", "172.16.0.0", "255.255.255.252", "172.16.0.3"},
+	} {
+		v := map[string]string{"LAN_SUBNET": tc.subnet, "ROUTER_IP": tc.router, "RPI5_IP": tc.rpi,
+			"LAN_POOL_START": tc.start, "LAN_POOL_END": tc.end}
+		c := &Config{LANSubnet: netip.MustParsePrefix(tc.subnet)}
+		if got := c.Netmask().String(); got != tc.mask {
+			t.Errorf("%s: netmask %s, want %s", tc.subnet, got, tc.mask)
+		}
+		if got := c.Broadcast().String(); got != tc.bcast {
+			t.Errorf("%s: broadcast %s, want %s", tc.subnet, got, tc.bcast)
+		}
+		if tc.subnet == "172.16.0.0/30" {
+			continue // в /30 нет места под пул — только проверка маски
+		}
+		if _, err := FromValues(v); err != nil {
+			t.Errorf("%s: %v", tc.subnet, err)
+		}
+	}
+}
+
+func TestValidateErrors(t *testing.T) {
+	for name, v := range map[string]map[string]string{
+		"не адрес сети":          {"LAN_SUBNET": "192.168.3.5/24"},
+		"префикс /31":            {"LAN_SUBNET": "192.168.3.0/31"},
+		"роутер вне подсети":     {"ROUTER_IP": "192.168.4.1"},
+		"rpi = broadcast":        {"RPI5_IP": "192.168.3.255"},
+		"rpi = роутер":           {"RPI5_IP": "192.168.3.1"},
+		"пул перевёрнут":         {"LAN_POOL_START": "192.168.3.200", "LAN_POOL_END": "192.168.3.100"},
+		"rpi в пуле":             {"RPI5_IP": "192.168.3.150"},
+		"пул вне подсети":        {"LAN_POOL_END": "192.168.4.10"},
+		"битый октет":            {"ROUTER_IP": "192.168.3.999"},
+		"IPv6 вместо IPv4":       {"DNS1": "2606:4700::1111"},
+		"длинное имя интерфейса": {"IFACE": "averyveryverylongname"},
+		"слэш в интерфейсе":      {"IFACE": "eth/0"},
+	} {
+		if _, err := FromValues(v); err == nil {
+			t.Errorf("%s: ожидалась ошибка", name)
+		}
+	}
+}
+
+func TestLoad(t *testing.T) {
+	dir := t.TempDir()
+
+	cfg, warns, err := Load(Path(dir))
+	if err != nil || cfg == nil || len(warns) != 1 {
+		t.Fatalf("отсутствующий файл: cfg=%v warns=%v err=%v", cfg, warns, err)
+	}
+
+	conf := "IFACE=eth1\nUNKNOWN_KEY=1\nRPI5_IP=192.168.3.3\n"
+	if err := os.WriteFile(filepath.Join(dir, FileName), []byte(conf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, warns, err = Load(Path(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Iface != "eth1" || cfg.RPi5IP.String() != "192.168.3.3" || cfg.RouterIP.String() != "192.168.3.1" {
+		t.Errorf("неожиданный конфиг: %+v", cfg)
+	}
+	if len(warns) != 1 || !strings.Contains(string(warns[0]), "UNKNOWN_KEY") {
+		t.Errorf("ожидалось предупреждение про UNKNOWN_KEY: %v", warns)
+	}
+}
+
+// Конфиг из референсного репозитория должен читаться без ошибок и предупреждений.
+func TestReferenceRouterConf(t *testing.T) {
+	cfg, warns, err := Load(filepath.Join("testdata", "router.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warns) != 0 {
+		t.Errorf("предупреждения: %v", warns)
+	}
+	if cfg.LANSubnet.String() != "192.168.3.0/24" || cfg.NMConn != "netplan-eth0" {
+		t.Errorf("неожиданный конфиг: %+v", cfg)
+	}
+}
