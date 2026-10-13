@@ -24,7 +24,8 @@
 #   lab.sh install        поставить routerd (bin/routerd-linux-arm64) и сервисы стенда
 #   lab.sh mode <redirect|tproxy|route> [closed|open]  режим VPN_MODE и VPN_FAILOVER
 #   lab.sh test           сквозные проверки текущего режима (после up + install)
-#   lab.sh test-all       все режимы подряд, каждый с closed и open
+#   lab.sh test-all       все режимы подряд
+#   lab.sh test-install   проверки install.sh: повторный запуск, --force, отказы
 #   lab.sh status         адреса и маршруты во всех namespace
 #   lab.sh exec <ns> cmd  выполнить команду в namespace (rpi, client, router, inet, exit, lan)
 #
@@ -509,6 +510,16 @@ pihole_key() { pihole-FTL --config "$1" 2>/dev/null; }
 pihole_key_is() { [[ "$(pihole_key "$1")" == "$2" ]]; }
 pihole_ready() { systemctl is-active --quiet pihole-FTL && nsx rpi dig +short +time=1 +tries=1 -p 5353 pi.hole @127.0.0.1 >/dev/null; }
 
+# run_installer <параметры> — install.sh репозитория. На стенде юниты работают в
+# namespace (drop-in lab-netns.conf), поэтому автозапуск при загрузке VM, когда
+# namespace ещё нет, выключается.
+run_installer() {
+    local rc=0
+    ROUTERD_BIN="${REPO_DIR}/bin/routerd-linux-arm64" "${REPO_DIR}/install.sh" "$@" || rc=$?
+    systemctl disable routerd.service >/dev/null 2>&1
+    return "${rc}"
+}
+
 ctl() { ROUTERD_CONFIG_DIR="${CONFIG_DIR}" /usr/local/bin/router_service_ctl "$@"; }
 
 cmd_install() {
@@ -518,19 +529,15 @@ cmd_install() {
     [[ -x "${bin}" ]] || die "нет ${bin} — соберите на Mac: make build-rpi"
     command -v gost >/dev/null || die "нет gost — lab.sh bootstrap"
 
-    install -m 0755 "${bin}" /usr/local/bin/routerd
-    ln -sf routerd /usr/local/bin/router_service_ctl
     mkdir -p "${CONFIG_DIR}"
     install -m 0644 "${LAB_DIR}"/conf/{router.conf,vpn_domains.txt,dns_override.txt} "${CONFIG_DIR}/"
 
-    install -m 0644 "${REPO_DIR}"/deploy/systemd/routerd.service "${UNIT_DIR}/"
-    in_ns routerd rpi
-    # До этапа 3 DNS обслуживал отдельный dnsmasq — убираем его со стенда.
-    systemctl disable --now routerd-dnsmasq 2>/dev/null || true
-    rm -rf "${UNIT_DIR}/routerd-dnsmasq.service" "${UNIT_DIR}/routerd-dnsmasq.service.d"
-
     # DNS-цепочка как на бою: Pi-hole :5353 → dnscrypt-proxy :5053 → DoH стенда.
     install_dns_chain
+    # routerd ставит install.sh, как на бою; зависимости стенд ставит сам
+    # (bootstrap, bootstrap-dns), запуск — ниже, после сервисов стенда.
+    run_installer --skip-deps --no-start
+    in_ns routerd rpi
     # DNS внутренней зоны corp.example (для dns_override.txt) на 203.0.113.53.
     unit lab-dns-corp inet "/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/dev/null --pid-file= --log-facility=- \
 --listen-address=203.0.113.53 --bind-interfaces --no-resolv --log-queries --address=/corp.example/203.0.113.10"
@@ -721,7 +728,7 @@ cmd_test() {
     log_info "Режим ${mode}"
 
     log_info "DHCP"
-    local cip ts nip
+    local cip nip
     cip="$(client_ip)"
     expect "клиент получил адрес из пула: ${cip}" in_pool "${cip}"
     expect "шлюз и DNS клиента — RPi 192.168.3.2" eq "$(lease_var client router) $(lease_var client dns)" "192.168.3.2 192.168.3.2"
@@ -874,6 +881,49 @@ cmd_test_all() {
     log_info "Все режимы пройдены."
 }
 
+#===============================================================================
+# test-install: install.sh (после install)
+#===============================================================================
+cmd_test_install() {
+    need_root
+    [[ -L /usr/local/bin/router_service_ctl ]] || die "сначала lab.sh install"
+    local out sum_conf sum_gost
+    sum_conf="$(sha256sum <"${CONFIG_DIR}/router.conf")"
+    sum_gost="$(sha256sum <"${UNIT_DIR}/gost-run.service")"
+    echo "install.sh:"
+
+    out="$(run_installer --skip-deps --no-start 2>&1)" && pass "повторный запуск" || fail "повторный запуск: ${out}"
+    expect "router.conf не изменён" eq "$(sha256sum <"${CONFIG_DIR}/router.conf")" "${sum_conf}"
+    expect "gost-run.service не изменён" eq "$(sha256sum <"${UNIT_DIR}/gost-run.service")" "${sum_gost}"
+    expect "router_service_ctl → routerd" eq "$(readlink /usr/local/bin/router_service_ctl)" routerd
+    expect "check-config в выводе" grep -q 'router.conf' <<<"${out}"
+    expect "без NetworkManager — предупреждение, не ошибка" grep -q 'apply-network --dry-run' <<<"${out}"
+    expect "автодополнение bash" bash -n /usr/share/bash-completion/completions/router_service_ctl
+    expect "автодополнение bash: команды" grep -q 'apply-network' /usr/share/bash-completion/completions/router_service_ctl
+    if command -v zsh >/dev/null; then
+        expect "автодополнение zsh" zsh -n /usr/local/share/zsh/site-functions/_router_service_ctl
+    fi
+
+    out="$(run_installer --skip-deps --no-start --force 2>&1)" || fail "--force: ${out}"
+    expect "--force: бэкап router.conf" compgen -G "${CONFIG_DIR}/router.conf.bak.*"
+    expect "--force: пример router.conf" cmp -s "${REPO_DIR}/deploy/config/router.conf" "${CONFIG_DIR}/router.conf"
+    expect "--force: gost-run.service не тронут" eq "$(sha256sum <"${UNIT_DIR}/gost-run.service")" "${sum_gost}"
+    install -m 0644 "${LAB_DIR}"/conf/{router.conf,vpn_domains.txt,dns_override.txt} "${CONFIG_DIR}/"
+    rm -f "${CONFIG_DIR}"/*.bak.*
+
+    rm /usr/local/bin/router_service_ctl
+    printf '#!/bin/bash\n' >/usr/local/bin/router_service_ctl
+    out="$(run_installer --skip-deps --no-start 2>&1)" && fail "чужой router_service_ctl затёрт" ||
+        expect "чужой router_service_ctl: отказ" grep -q 'не symlink' <<<"${out}"
+    expect "чужой router_service_ctl: не тронут" grep -q '^#!/bin/bash' /usr/local/bin/router_service_ctl
+    ln -sfn routerd /usr/local/bin/router_service_ctl
+
+    ctl restart >/dev/null
+    expect "routerd после переустановки" systemctl is-active --quiet routerd
+    [[ ${fails} -eq 0 ]] || die "не пройдено проверок: ${fails}"
+    log_info "install.sh: все проверки пройдены."
+}
+
 case "${1:-help}" in
 bootstrap) cmd_bootstrap ;;
 bootstrap-dns) cmd_bootstrap_dns ;;
@@ -887,6 +937,7 @@ mode)
     ;;
 test) cmd_test ;;
 test-all) cmd_test_all ;;
+test-install) cmd_test_install ;;
 status) cmd_status ;;
 exec)
     need_root

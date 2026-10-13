@@ -193,7 +193,9 @@ internal/dhcp/        DHCP: пул и аренды (чистая логика), 
 internal/routing/     policy routing через netlink: ip rule, таблица 152 (Linux)
 internal/daemon/      routerd run: применение, sd_notify (notify-reload), SIGHUP,
                       слежение за туннелем, VPN_FAILOVER, очистка
-deploy/systemd/       routerd.service
+deploy/systemd/       routerd.service, пример gost-run.service
+deploy/config/        примеры router.conf (все ключи), vpn_domains.txt, dns_override.txt
+install.sh            установка/обновление на RPi (bash — единственное место вне Go)
 testbed/              стенд: lab.sh, эталон ядра RPi, конфиги стенда
 internal/pihole/      сверка и точечная правка ключей цепочки в pihole.toml
 internal/netcfg/      apply-network: NetworkManager по D-Bus + Checkpoint
@@ -219,7 +221,7 @@ Linux-специфичное — под `//go:build linux`, проверяетс
 | 3 | DNS-прокси на Go вместо dnsmasq; `routerd-dnsmasq` и пакет `internal/dnsmasq` удалены. Теневой режим не понадобился — боевая RPi до проверки всего на стенде не трогается | Kea, nmcli |
 | 4 | DHCP вместо Kea (`insomniacslk/dhcp`), имена `*.lan` и PTR из аренд; клиент стенда получает адрес по DHCP | nmcli |
 | 5 | `apply-network` (NetworkManager D-Bus + Checkpoint), сверка `pihole.toml`, проверка `dnscrypt-proxy.socket` | — |
-| 6 | install.sh, completions, документация | — |
+| 6 | `install.sh` (зависимости, routerd, примеры конфигов, автозапуск), автодополнение из бинарника (`routerd completion`), `make dist`; стенд ставит routerd через `install.sh`. Переход боевой RPi с bash-версии — отдельный скрипт вне репозитория | — |
 
 ## Тестовый стенд
 

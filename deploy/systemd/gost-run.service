@@ -1,0 +1,27 @@
+# gost-run.service — клиент туннеля (GOST v3). Конфиг ваш: install.sh ставит
+# этот пример только если юнита ещё нет и никогда его не перезаписывает.
+#
+# Слушатель зависит от VPN_MODE в router.conf (порт — VPN_PORT):
+#   redirect  -L red://:1080
+#   tproxy    -L red://:1080?tproxy=true -L redu://:1080?ttl=30s
+#   route     -L tun://:0/<сервер>:8421?net=192.168.123.2/24&name=tun0
+# Цепочка -F — ваш сервер (или несколько -F подряд), например:
+#   -F relay+wss://user:pass@vpn.example.com:443?path=/tunnel
+[Unit]
+Description=GOST — клиент туннеля
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/gost -L red://:1080 -F relay+wss://vpn.example.com:443?path=/tunnel
+Restart=on-failure
+RestartSec=5
+DynamicUser=yes
+# tproxy и route требуют CAP_NET_ADMIN (и root для tun).
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

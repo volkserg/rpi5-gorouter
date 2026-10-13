@@ -1,0 +1,6 @@
+# Адреса, трафик к которым идёт через туннель.
+# По одной записи на строку:
+#   example.com      домен (с поддоменами)
+#   203.0.113.10     IP-адрес
+#   10.20.0.0/16     подсеть
+# Управление: router_service_ctl add-vpn-domain|remove-vpn-domain|add-vpn-ip|remove-vpn-ip
