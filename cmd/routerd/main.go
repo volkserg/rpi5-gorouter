@@ -2,6 +2,7 @@
 //
 // Один бинарник, два имени:
 //
+//	routerd run                   демон (systemd-юнит routerd.service)
 //	routerd ctl <команда> …       CLI (то же, что router_service_ctl)
 //	router_service_ctl <команда>  через symlink на routerd
 //	routerd version
@@ -33,6 +34,8 @@ func run(args []string) int {
 		return 2
 	}
 	switch args[1] {
+	case "run":
+		return runDaemon()
 	case "ctl":
 		return cli.Run(env, args[2:])
 	case "version", "--version":
@@ -49,6 +52,7 @@ func run(args []string) int {
 
 func usage() {
 	fmt.Fprint(os.Stderr, `Использование:
+  routerd run                         демон (запускается systemd)
   routerd ctl <команда> [аргументы]   команды router_service_ctl (routerd ctl help)
   routerd version                     версия сборки
 `)

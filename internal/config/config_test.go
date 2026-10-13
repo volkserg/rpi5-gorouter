@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseAssignments(t *testing.T) {
@@ -153,5 +154,36 @@ func TestReferenceRouterConf(t *testing.T) {
 	}
 	if cfg.LANSubnet.String() != "192.168.3.0/24" || cfg.NMConn != "netplan-eth0" {
 		t.Errorf("неожиданный конфиг: %+v", cfg)
+	}
+}
+
+func TestRouterdKeys(t *testing.T) {
+	cfg, err := FromValues(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.VPNMode != ModeRedirect || cfg.VPNPort != 1080 || !cfg.QUICReject ||
+		cfg.VPNDynamicTimeout != 24*time.Hour || cfg.DNSUpstream.String() != "127.0.0.1:5353" {
+		t.Errorf("дефолты: %+v", cfg)
+	}
+	cfg, err = FromValues(map[string]string{"VPN_PORT": "12345", "QUIC_REJECT": "no",
+		"VPN_DYNAMIC_TIMEOUT": "30s", "DNS_UPSTREAM": "10.0.0.53"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.VPNPort != 12345 || cfg.QUICReject || cfg.VPNDynamicTimeout != 30*time.Second || cfg.DNSUpstream.String() != "10.0.0.53:53" {
+		t.Errorf("заданные значения: %+v", cfg)
+	}
+	for name, v := range map[string]map[string]string{
+		"неизвестный режим":  {"VPN_MODE": "magic"},
+		"режим ещё не готов": {"VPN_MODE": "tproxy"},
+		"порт 0":             {"VPN_PORT": "0"},
+		"QUIC_REJECT=maybe":  {"QUIC_REJECT": "maybe"},
+		"таймаут меньше 1s":  {"VPN_DYNAMIC_TIMEOUT": "500ms"},
+		"upstream не IP":     {"DNS_UPSTREAM": "pihole.lan"},
+	} {
+		if _, err := FromValues(v); err == nil {
+			t.Errorf("%s: ожидалась ошибка", name)
+		}
 	}
 }

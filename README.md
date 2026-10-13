@@ -5,9 +5,10 @@
 и подсетям через VPN-туннель (например, к корпоративной сети) на одном порту `eth0`.
 Замена bash-версии без вызова внешних утилит в рабочем режиме.
 
-Статус: **этап 1** — все команды `router_service_ctl` (кроме `apply-network`),
-управление юнитами через D-Bus. Демона (`routerd run`) ещё нет — он появится
-на этапе 2 вместе с nftables.
+Статус: **этап 2** — демон `routerd run`: sysctl и правила nftables через netlink
+(режим `redirect`), DNS-фильтр на dnsmasq с `nftset=` (временно, до DNS-прокси
+routerd), перечитывание конфигов по SIGHUP; все команды `router_service_ctl`,
+кроме `apply-network`.
 Архитектура, решения и план — в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Сборка
@@ -32,4 +33,25 @@ dnscrypt-proxy продолжают работать. `logs` — единств�
 вызывает внешнюю программу (`journalctl`).
 
 Каталог конфигов — `/usr/local/etc/router_service`; для стенда и отладки
-переопределяется переменной `ROUTERD_CONFIG_DIR`.
+переопределяется переменной `ROUTERD_CONFIG_DIR`. Юниты systemd — в `deploy/systemd/`.
+
+## Тестовый стенд
+
+Network namespace в Linux-VM (OrbStack, Debian 13 arm64), без Docker —
+см. `testbed/lab.sh`:
+
+```bash
+make build-rpi
+orb -m routerd-lab sudo ./testbed/lab.sh bootstrap      # один раз
+orb -m routerd-lab sudo ./testbed/lab.sh check-kernel   # ядро VM против эталона RPi
+orb -m routerd-lab sudo ./testbed/lab.sh up
+orb -m routerd-lab sudo ./testbed/lab.sh install
+orb -m routerd-lab sudo ./testbed/lab.sh test
+```
+
+Интеграционные тесты nftables (root, в отдельном netns):
+
+```bash
+GOOS=linux GOARCH=arm64 go test -c -tags integration -o fw.test ./internal/firewall
+orb -m routerd-lab sudo ./fw.test -test.v
+```

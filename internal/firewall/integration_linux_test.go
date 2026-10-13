@@ -1,0 +1,165 @@
+//go:build linux && integration
+
+// Интеграционные тесты: настоящий nftables в отдельном network namespace.
+// Нужны root и утилиты ip/nft (только для подготовки и проверки — сам
+// routerd их не вызывает). Запуск на стенде:
+//
+//	GOOS=linux GOARCH=arm64 go test -c -tags integration -o fw.test ./internal/firewall
+//	orb -m routerd-lab sudo ./fw.test -test.v
+package firewall
+
+import (
+	"fmt"
+	"net/netip"
+	"os"
+	"os/exec"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/google/nftables"
+)
+
+// testNS создаёт namespace и возвращает Conn в нём и функцию выполнения команд.
+func testNS(t *testing.T) (*nftables.Conn, func(args ...string) string) {
+	t.Helper()
+	if os.Geteuid() != 0 {
+		t.Skip("нужен root")
+	}
+	name := fmt.Sprintf("routerd-it-%d", os.Getpid())
+	if out, err := exec.Command("ip", "netns", "add", name).CombinedOutput(); err != nil {
+		t.Fatalf("ip netns add: %v: %s", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("ip", "netns", "del", name).Run() })
+
+	f, err := os.Open("/run/netns/" + name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
+	c, err := nftables.New(nftables.WithNetNSFd(int(f.Fd())))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("ip", append([]string{"netns", "exec", name}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("%v: %v: %s", args, err, out)
+		}
+		return string(out)
+	}
+	return c, run
+}
+
+func spec(static ...string) Spec {
+	s := Spec{
+		Iface:          "eth0",
+		LAN:            netip.MustParsePrefix("192.168.3.0/24"),
+		RedirectPort:   1080,
+		QUICReject:     true,
+		DynamicTimeout: 24 * time.Hour,
+	}
+	for _, p := range static {
+		s.Static = append(s.Static, netip.MustParsePrefix(p))
+	}
+	return s
+}
+
+func mustContain(t *testing.T, out string, want ...string) {
+	t.Helper()
+	for _, w := range want {
+		if !strings.Contains(out, w) {
+			t.Errorf("нет %q в:\n%s", w, out)
+		}
+	}
+}
+
+func TestApplyRedirectMode(t *testing.T) {
+	c, run := testNS(t)
+	if _, err := Apply(c, spec("10.20.0.0/16", "10.20.5.0/24", "192.0.2.10/32")); err != nil {
+		t.Fatal(err)
+	}
+	out := run("nft", "list", "table", "ip", TableName)
+	mustContain(t, out,
+		"set vpn_static", "flags interval", "10.20.0.0/16", "192.0.2.10",
+		"set vpn_dynamic", "timeout 1d",
+		`iifname "eth0" meta l4proto tcp ip daddr @vpn_static counter`,
+		`ip daddr @vpn_dynamic counter`, "redirect to :1080",
+		"ip saddr 192.168.3.0/24 ip daddr != 192.168.3.0/24 counter", "masquerade",
+		`iifname "eth0" udp dport 443 ip daddr @vpn_static counter`,
+		`iifname "eth0" udp dport 443 ip daddr @vpn_dynamic counter`,
+		"reject",
+	)
+	if strings.Contains(out, "10.20.5.0/24") {
+		t.Error("вложенная подсеть должна слиться с 10.20.0.0/16")
+	}
+}
+
+func TestReapplyKeepsDynamic(t *testing.T) {
+	c, run := testNS(t)
+	if _, err := Apply(c, spec("10.20.0.0/16")); err != nil {
+		t.Fatal(err)
+	}
+	run("nft", "add", "element", "ip", TableName, SetDynamic, "{ 198.51.100.77 }")
+
+	recreated, err := Apply(c, spec("172.16.0.0/12"))
+	if err != nil || recreated {
+		t.Fatalf("recreated=%v err=%v", recreated, err)
+	}
+	out := run("nft", "list", "table", "ip", TableName)
+	mustContain(t, out, "172.16.0.0/12", "198.51.100.77")
+	if strings.Contains(out, "10.20.0.0/16") {
+		t.Error("старые статические записи должны быть заменены")
+	}
+	// Правила не дублируются при повторном применении.
+	if n := strings.Count(out, "redirect to :1080"); n != 2 {
+		t.Errorf("правил redirect: %d, want 2", n)
+	}
+}
+
+func TestReapplyIncompatibleRecreates(t *testing.T) {
+	c, run := testNS(t)
+	if _, err := Apply(c, spec()); err != nil {
+		t.Fatal(err)
+	}
+	s := spec()
+	s.DynamicTimeout = time.Hour
+	recreated, err := Apply(c, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := run("nft", "list", "set", "ip", TableName, SetDynamic)
+	t.Logf("recreated=%v\n%s", recreated, out)
+	if !recreated || !strings.Contains(out, "timeout 1h") {
+		t.Error("смена таймаута vpn_dynamic должна пересоздавать таблицу")
+	}
+}
+
+func TestQUICRejectOff(t *testing.T) {
+	c, run := testNS(t)
+	s := spec()
+	s.QUICReject = false
+	if _, err := Apply(c, s); err != nil {
+		t.Fatal(err)
+	}
+	if out := run("nft", "list", "table", "ip", TableName); strings.Contains(out, "reject") {
+		t.Errorf("reject при QUICReject=false:\n%s", out)
+	}
+}
+
+func TestRemove(t *testing.T) {
+	c, run := testNS(t)
+	if err := Remove(c); err != nil {
+		t.Fatalf("удаление несуществующей таблицы: %v", err)
+	}
+	if _, err := Apply(c, spec()); err != nil {
+		t.Fatal(err)
+	}
+	if err := Remove(c); err != nil {
+		t.Fatal(err)
+	}
+	if out := run("nft", "list", "tables"); strings.Contains(out, TableName) {
+		t.Errorf("таблица осталась:\n%s", out)
+	}
+}

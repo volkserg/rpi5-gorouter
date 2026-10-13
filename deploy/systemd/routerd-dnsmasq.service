@@ -1,0 +1,11 @@
+# Временный DNS-фильтр (до DNS-прокси routerd): конфиг генерирует routerd,
+# он же запускает и перезапускает юнит; останавливается вместе с routerd.
+[Unit]
+Description=routerd — DNS-фильтр (dnsmasq)
+PartOf=routerd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/run/routerd/dnsmasq.conf --pid-file= --log-facility=-
+Restart=on-failure
+RestartSec=2

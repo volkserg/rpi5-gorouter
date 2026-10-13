@@ -123,7 +123,11 @@ func cmdStatus(x *ctx, _ []string) int {
 	x.out("")
 
 	x.out("%sVPN:%s", x.c.Yellow, x.c.NC)
-	x.out("  :%d  GOST           %s", config.RedirectPort, listen(true, false, config.RedirectPort))
+	port := uint16(config.RedirectPort)
+	if cfg, _, err := config.Load(x.routerConf()); err == nil {
+		port = cfg.VPNPort
+	}
+	x.out("  :%-5d GOST           %s", port, listen(true, false, port))
 	if l, exists, err := lists.ReadVPN(x.vpnFile()); err == nil && exists {
 		var doms, nets int
 		for _, e := range l.Entries() {

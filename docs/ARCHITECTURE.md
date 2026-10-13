@@ -52,7 +52,12 @@ UDP/443 к VPN-адресам → REJECT icmp port-unreachable (браузер �
 - GOST: конфиг под управлением пользователя, routerd только запускает/проверяет юнит.
   Удалённая сторона может быть цепочкой из нескольких узлов — routerd о ней ничего
   не знает, его зона ответственности заканчивается на локальном слушателе GOST или `tun0`.
-- Новые ключи `router.conf` допустимы, всегда с дефолтами.
+- Новые ключи `router.conf` допустимы, всегда с дефолтами: `VPN_MODE`, `VPN_PORT`,
+  `QUIC_REJECT`, `VPN_DYNAMIC_TIMEOUT` (24h), `DNS_UPSTREAM` (`127.0.0.1#5353`).
+- `routerd.service` — `Type=notify-reload`: `reload-vpn-domains` завершается,
+  когда routerd применил списки; статус применения — в `StatusText` юнита.
+- Перезагрузка сохраняет адреса в `vpn_dynamic`; если параметры set'ов изменились
+  (например, таймаут), таблица пересоздаётся — не все ядра обновляют их на месте.
 
 ### Режимы VPN
 
@@ -96,16 +101,18 @@ internal/lists/       vpn_domains.txt, dns_override.txt; flock + атомарн�
 internal/cli/         команды router_service_ctl
 internal/services/    systemd по D-Bus, порядок запуска (+ servicestest — подделка для тестов)
 internal/sysinfo/     /proc: слушающие порты, sysctl (для status)
+internal/firewall/    nftables через netlink: таблица router_service, set'ы, правила (Linux)
+internal/sysctl/      запись /proc/sys (ip_forward, redirects — в т.ч. для интерфейса)
+internal/dnsmasq/     конфиг временного DNS-фильтра (nftset=, server=) — до этапа 3
+internal/daemon/      routerd run: применение, sd_notify (notify-reload), SIGHUP, очистка
+deploy/systemd/       routerd.service, routerd-dnsmasq.service
+testbed/              стенд: lab.sh, эталон ядра RPi, конфиги стенда
 — далее по этапам —
-internal/firewall/    nftables: сборка ruleset (чистая функция) + применение
 internal/dnsproxy/    DNS-прокси
 internal/dhcp/        аренды (чистая логика) + сервер
 internal/netcfg/      NetworkManager D-Bus / netlink (проверка)
-internal/sysctl/      запись /proc/sys
 internal/managed/     pihole.toml, dnscrypt-proxy.toml
 internal/control/     unix-сокет CLI ↔ демон
-internal/daemon/      сборка, sd_notify, SIGHUP
-testbed/              стенд (netns в VM)
 ```
 
 Юнит-тесты — всё, что не трогает ядро (работают и на macOS).
@@ -121,7 +128,7 @@ Linux-специфичное — под `//go:build linux`, проверяетс
 |---|---|---|
 | 0 | каркас: config, lists, domain, CLI на чтение (`info`, `list-vpn-domains`, `check-config`) | всё |
 | 1 | все команды CLI (кроме apply-network), start/stop/status/logs через D-Bus; правки списков применяются через `ReloadUnit(routerd.service)` (SIGHUP) | init.sh, ipset, dnsmasq, Kea, nmcli |
-| 2 | nftables + sysctl (режим `redirect`); dnsmasq на `nftset=` как отдельный юнит | dnsmasq, Kea, nmcli |
+| 2 | демон `routerd run`, nftables + sysctl (режим `redirect`), dnsmasq на `nftset=` как юнит `routerd-dnsmasq`; стенд и сквозные проверки | dnsmasq, Kea, nmcli |
 | 2a | режимы `tproxy` и `route`, `VPN_FAILOVER` | dnsmasq, Kea, nmcli |
 | 3 | DNS-прокси (сначала теневой режим) | Kea, nmcli |
 | 4 | DHCP | nmcli |

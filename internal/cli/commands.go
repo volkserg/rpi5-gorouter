@@ -36,7 +36,10 @@ func cmdInfo(x *ctx, _ []string) int {
 	x.out("  Маска / broadcast:  %s / %s", cfg.Netmask(), cfg.Broadcast())
 	x.out("  Пул DHCP:           %s - %s", cfg.PoolStart, cfg.PoolEnd)
 	x.out("  Upstream DNS:       %s", strings.Join(dns, ", "))
-	x.out("  REDIRECT порт:      %d", config.RedirectPort)
+	x.out("  DNS-upstream:       %s (Pi-hole)", cfg.DNSUpstream)
+	x.out("  Туннель:            режим %s, порт %d", cfg.VPNMode, cfg.VPNPort)
+	x.out("  QUIC reject:        %s", yesNo(cfg.QUICReject))
+	x.out("  vpn_dynamic:        таймаут %s", cfg.VPNDynamicTimeout)
 	x.out("")
 
 	x.out("%sСписки:%s", x.c.Yellow, x.c.NC)
@@ -152,4 +155,11 @@ func cmdCheckConfig(x *ctx, _ []string) int {
 		return 1
 	}
 	return 0
+}
+
+func yesNo(b bool) string {
+	if b {
+		return "да"
+	}
+	return "нет"
 }

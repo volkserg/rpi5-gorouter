@@ -10,7 +10,9 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -18,9 +20,15 @@ const (
 	DefaultDir = "/usr/local/etc/router_service"
 	// FileName — имя центрального конфига в каталоге конфигов.
 	FileName = "router.conf"
-	// RedirectPort — порт GOST redirect://, куда nftables заворачивает
-	// TCP к VPN-адресам.
+	// RedirectPort — порт GOST redirect:// по умолчанию (VPN_PORT).
 	RedirectPort = 1080
+)
+
+// Режимы отправки трафика в туннель (VPN_MODE).
+const (
+	ModeRedirect = "redirect"
+	ModeTProxy   = "tproxy"
+	ModeRoute    = "route"
 )
 
 // Config — проверенные параметры сети из router.conf.
@@ -34,6 +42,17 @@ type Config struct {
 	PoolEnd   netip.Addr
 	// DNS — upstream DNS для самой RPi5 (DNS1, DNS2); пустые значения пропущены.
 	DNS []netip.Addr
+
+	// VPNMode — способ отправки трафика к адресам из списков в туннель.
+	VPNMode string
+	// VPNPort — порт локального слушателя туннеля (GOST).
+	VPNPort uint16
+	// QUICReject — отклонять UDP/443 к адресам из списков.
+	QUICReject bool
+	// VPNDynamicTimeout — сколько живёт адрес, узнанный из DNS, в vpn_dynamic.
+	VPNDynamicTimeout time.Duration
+	// DNSUpstream — следующий DNS в цепочке (Pi-hole).
+	DNSUpstream netip.AddrPort
 }
 
 // Значения по умолчанию совпадают с дефолтами bash-скриптов
@@ -48,6 +67,13 @@ var defaults = map[string]string{
 	"LAN_POOL_END":   "192.168.3.250",
 	"DNS1":           "1.1.1.1",
 	"DNS2":           "8.8.8.8",
+
+	// Ключи routerd (в bash-версии были зашиты в скрипты).
+	"VPN_MODE":            ModeRedirect,
+	"VPN_PORT":            "1080",
+	"QUIC_REJECT":         "yes",
+	"VPN_DYNAMIC_TIMEOUT": "24h",
+	"DNS_UPSTREAM":        "127.0.0.1#5353",
 }
 
 // Warning — некритичное замечание к конфигу (неизвестный ключ, отсутствующий файл).
@@ -121,6 +147,34 @@ func FromValues(values map[string]string) (*Config, error) {
 		if a := addr(k); a.IsValid() {
 			cfg.DNS = append(cfg.DNS, a)
 		}
+	}
+	switch m := get("VPN_MODE"); m {
+	case ModeRedirect:
+		cfg.VPNMode = m
+	case ModeTProxy, ModeRoute:
+		errs = append(errs, fmt.Errorf("VPN_MODE=%s: режим ещё не реализован, доступен %s", m, ModeRedirect))
+	default:
+		errs = append(errs, fmt.Errorf("VPN_MODE=%q: ожидается %s, %s или %s", m, ModeRedirect, ModeTProxy, ModeRoute))
+	}
+	if v, err := strconv.ParseUint(get("VPN_PORT"), 10, 16); err != nil || v == 0 {
+		errs = append(errs, fmt.Errorf("VPN_PORT=%q: ожидается порт 1–65535", get("VPN_PORT")))
+	} else {
+		cfg.VPNPort = uint16(v)
+	}
+	if b, err := parseBool(get("QUIC_REJECT")); err != nil {
+		errs = append(errs, fmt.Errorf("QUIC_REJECT: %w", err))
+	} else {
+		cfg.QUICReject = b
+	}
+	if d, err := time.ParseDuration(get("VPN_DYNAMIC_TIMEOUT")); err != nil || d < time.Second {
+		errs = append(errs, fmt.Errorf("VPN_DYNAMIC_TIMEOUT=%q: ожидается длительность не меньше 1s (например, 24h)", get("VPN_DYNAMIC_TIMEOUT")))
+	} else {
+		cfg.VPNDynamicTimeout = d
+	}
+	if ap, err := parseAddrPort(get("DNS_UPSTREAM"), 53); err != nil {
+		errs = append(errs, fmt.Errorf("DNS_UPSTREAM: %w", err))
+	} else {
+		cfg.DNSUpstream = ap
 	}
 	if p, err := netip.ParsePrefix(get("LAN_SUBNET")); err != nil || !p.Addr().Is4() {
 		errs = append(errs, fmt.Errorf("LAN_SUBNET=%q: ожидается подсеть IPv4 в виде a.b.c.d/N", get("LAN_SUBNET")))
@@ -228,4 +282,34 @@ func validIfaceName(s string) error {
 		return errors.New("недопустимые символы в имени интерфейса")
 	}
 	return nil
+}
+
+func parseBool(s string) (bool, error) {
+	switch strings.ToLower(s) {
+	case "yes", "true", "1", "on":
+		return true, nil
+	case "no", "false", "0", "off":
+		return false, nil
+	}
+	return false, fmt.Errorf("%q: ожидается yes или no", s)
+}
+
+// parseAddrPort разбирает IP, IP#порт или IP:порт (порт по умолчанию def).
+func parseAddrPort(s string, def uint16) (netip.AddrPort, error) {
+	if ap, err := netip.ParseAddrPort(s); err == nil && ap.Port() != 0 {
+		return ap, nil
+	}
+	host, port := s, def
+	if h, p, ok := strings.Cut(s, "#"); ok {
+		v, err := strconv.ParseUint(p, 10, 16)
+		if err != nil || v == 0 {
+			return netip.AddrPort{}, fmt.Errorf("%q: некорректный порт", s)
+		}
+		host, port = h, uint16(v)
+	}
+	a, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.AddrPort{}, fmt.Errorf("%q: ожидается IP-адрес с необязательным #порт", s)
+	}
+	return netip.AddrPortFrom(a, port), nil
 }
