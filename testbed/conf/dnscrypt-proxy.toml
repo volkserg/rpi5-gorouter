@@ -1,0 +1,27 @@
+# dnscrypt-proxy стенда: как config/dnscrypt-proxy.toml в rpi5-router
+# (socket activation, только DoH, без кэша), но единственный сервер —
+# DoH стенда doh.example, закреплённый по хэшу CA стенда. @STAMP@ подставляет lab.sh.
+listen_addresses = []
+server_names = ['lab-doh']
+
+ipv6_servers = false
+dnscrypt_servers = false
+doh_servers = true
+require_dnssec = true
+require_nolog = true
+require_nofilter = true
+force_tcp = true
+
+cache = false
+timeout = 5000
+keepalive = 30
+
+bootstrap_resolvers = ['203.0.113.54:53']
+ignore_system_dns = true
+netprobe_address = '203.0.113.55:443'
+netprobe_timeout = 30
+
+log_level = 2
+
+[static.'lab-doh']
+stamp = '@STAMP@'

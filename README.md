@@ -43,8 +43,9 @@ Network namespace в Linux-VM (OrbStack, Debian 13 arm64), без Docker —
 см. `testbed/lab.sh`:
 
 ```bash
-make build-rpi
-orb -m routerd-lab sudo ./testbed/lab.sh bootstrap      # один раз
+make build-rpi build-lab
+orb -m routerd-lab sudo ./testbed/lab.sh bootstrap      # один раз: пакеты, GOST
+orb -m routerd-lab sudo ./testbed/lab.sh bootstrap-dns  # один раз: Pi-hole, dnscrypt-proxy
 orb -m routerd-lab sudo ./testbed/lab.sh check-kernel   # ядро VM против эталона RPi
 orb -m routerd-lab sudo ./testbed/lab.sh up
 orb -m routerd-lab sudo ./testbed/lab.sh install
@@ -52,6 +53,10 @@ orb -m routerd-lab sudo ./testbed/lab.sh test       # текущий режим
 orb -m routerd-lab sudo ./testbed/lab.sh test-all   # redirect, tproxy, route × closed/open
 orb -m routerd-lab sudo ./testbed/lab.sh mode tproxy open
 ```
+
+DNS на стенде — как на бою: routerd → Pi-hole (:5353) → dnscrypt-proxy
+(:5053, socket activation) → DoH-сервер стенда (`testbed/dohd`, сертификат
+от собственного CA стенда) → авторитетный DNS тестовых зон `*.example`.
 
 Интеграционные тесты nftables (root, в отдельном netns):
 

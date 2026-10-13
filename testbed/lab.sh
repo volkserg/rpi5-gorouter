@@ -11,11 +11,13 @@
 #   lab-router ─┘      router 192.168.3.1 — «домашний роутер», DHCP выключен
 #        │ wan0 198.51.100.2/30
 #   lab-inet  — «интернет»: 203.0.113.10 (прямой сайт), 203.0.113.20 (сайт за туннелем),
-#        │      203.0.113.53 (DoH); основной namespace VM в схеме не участвует
+#        │      203.0.113.53 (DNS corp.example), 203.0.113.54 (DNS тестовых зон),
+#        │      203.0.113.55 (DoH doh.example); основной namespace VM в схеме не участвует
 #   lab-exit  — удалённый узел туннеля 198.51.100.6/30 (GOST-сервер)
 #
 # Использование (внутри VM, от root):
 #   lab.sh bootstrap      установить пакеты стенда (нужен интернет один раз)
+#   lab.sh bootstrap-dns  установить настоящие Pi-hole и dnscrypt-proxy (интернет)
 #   lab.sh check-kernel   сверить ядро VM с эталоном боевой RPi + пробные правила
 #   lab.sh up | down      поднять / снести топологию (down заодно останавливает сервисы)
 #   lab.sh install        поставить routerd (bin/routerd-linux-arm64) и сервисы стенда
@@ -89,6 +91,44 @@ install_gost() {
     install -m 0755 "${tmp}/gost" /usr/local/bin/gost
     rm -rf "${tmp}"
     log_info "gost установлен: $(gost -V 2>&1 | head -1)"
+}
+
+#===============================================================================
+# bootstrap-dns: настоящие Pi-hole и dnscrypt-proxy
+#===============================================================================
+PIHOLE_INSTALLER="https://raw.githubusercontent.com/pi-hole/pi-hole/master/automated%20install/basic-install.sh"
+
+cmd_bootstrap_dns() {
+    need_root
+    log_info "dnscrypt-proxy из apt..."
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -q dnscrypt-proxy
+    # Пакет сам включает socket на 127.0.2.1:53 в основном namespace VM —
+    # на стенде он работает только в namespace rpi (lab.sh install).
+    systemctl disable --now dnscrypt-proxy.socket dnscrypt-proxy.service 2>/dev/null || true
+
+    if command -v pihole >/dev/null; then
+        log_info "Pi-hole уже установлен: $(pihole -v 2>/dev/null | head -1)"
+        return
+    fi
+    # Автоматическая установка Pi-hole v6 работает только при существующем
+    # pihole.toml. Upstream на время установки — DNS самой VM (для gravity).
+    local vm_dns
+    vm_dns="$(awk '/^nameserver/ {print $2; exit}' /etc/resolv.conf)"
+    install -d -m 0755 /etc/pihole
+    cat >/etc/pihole/pihole.toml <<EOF
+[dns]
+  upstreams = ["${vm_dns}"]
+  port = 5353
+  listeningMode = "ALL"
+EOF
+    local tmp
+    tmp="$(mktemp -d)"
+    curl -fsSL "${PIHOLE_INSTALLER}" -o "${tmp}/basic-install.sh" || die "не удалось скачать ${PIHOLE_INSTALLER}"
+    log_info "Установка Pi-hole (несколько минут)..."
+    bash "${tmp}/basic-install.sh" --unattended || die "установка Pi-hole не удалась (журнал: /etc/pihole/install.log)"
+    rm -rf "${tmp}"
+    systemctl disable --now pihole-FTL 2>/dev/null || true
+    log_info "Pi-hole установлен: $(pihole -v 2>/dev/null | head -1)"
 }
 
 #===============================================================================
@@ -258,7 +298,7 @@ EOF
     nsx inet ip link add srv type dummy
     nsx inet ip link set srv up
     local a
-    for a in 203.0.113.10 203.0.113.20 203.0.113.53; do
+    for a in 203.0.113.10 203.0.113.20 203.0.113.53 203.0.113.54 203.0.113.55 203.0.113.99; do
         nsx inet ip addr add "${a}/32" dev srv
     done
     nsx inet sysctl -qw net.ipv4.ip_forward=1
@@ -308,13 +348,15 @@ selftest() {
 }
 
 # Юниты стенда: управляемые routerd (имена как на бою) и вспомогательные.
-STAND_UNITS=(gost-run routerd-dnsmasq routerd pihole-FTL lab-dns-corp lab-dns-vpn lab-web-direct lab-web-vpn lab-gost-exit)
+STAND_UNITS=(gost-run routerd-dnsmasq routerd pihole-FTL dnscrypt-proxy dnscrypt-proxy.socket
+    lab-dns-corp lab-dns-vpn lab-dns-public lab-dohd lab-web-direct lab-web-vpn lab-gost-exit)
 
 cmd_down() {
     need_root
     local u ns
     for u in "${STAND_UNITS[@]}"; do
-        systemctl stop "${u}.service" 2>/dev/null || true
+        [[ "${u}" == *.* ]] || u="${u}.service"
+        systemctl stop "${u}" 2>/dev/null || true
     done
     for ns in $(ip netns list | awk '/^lab-/ {print $1}'); do
         ip netns del "${ns}"
@@ -357,6 +399,93 @@ NetworkNamespacePath=/run/netns/lab-$2
 EOF
 }
 
+# Публичные тестовые зоны (их видит DoH-сервер): TTL 120, A и AAAA.
+# Зона .example, а не .test: Pi-hole отвечает на .test (RFC 6761) сам,
+# не спрашивая upstream (как и на lan, internal, home.arpa, invalid, onion).
+PUBLIC_ZONES="--address=/vpn.example/203.0.113.20 --address=/vpn.example/2001:db8::20 \
+--address=/direct.example/203.0.113.10 --address=/direct.example/2001:db8::10 \
+--address=/ads.example/203.0.113.99 --address=/#/"
+# --address=/#/ — на всё остальное NXDOMAIN, как настоящий резолвер: иначе
+# dnscrypt-proxy считает сервер «lying resolver» и не использует его.
+PKI_DIR="${SRV_DIR}/pki"
+LAB_ETC="/etc/routerd-lab"
+
+# pki: собственный CA стенда и сертификат DoH-сервера doh.example (203.0.113.55).
+# CA добавляется в доверенные VM — dnscrypt-proxy проверяет цепочку по системным.
+pki() {
+    # Сертификат выпущен под текущее имя DoH — ничего не делаем.
+    if [[ -f "${PKI_DIR}/doh-fullchain.crt" ]] &&
+        openssl x509 -noout -ext subjectAltName -in "${PKI_DIR}/doh.crt" 2>/dev/null | grep -q "DNS:doh.example"; then
+        return
+    fi
+    rm -rf "${PKI_DIR}"
+    mkdir -p "${PKI_DIR}"
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 3650 \
+        -subj "/CN=routerd lab CA" -keyout "${PKI_DIR}/ca.key" -out "${PKI_DIR}/ca.crt" 2>/dev/null
+    openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+        -subj "/CN=doh.example" -keyout "${PKI_DIR}/doh.key" -out "${PKI_DIR}/doh.csr" 2>/dev/null
+    printf 'subjectAltName=DNS:doh.example,IP:203.0.113.55\nextendedKeyUsage=serverAuth\n' >"${PKI_DIR}/doh.ext"
+    openssl x509 -req -in "${PKI_DIR}/doh.csr" -CA "${PKI_DIR}/ca.crt" -CAkey "${PKI_DIR}/ca.key" \
+        -CAcreateserial -days 825 -extfile "${PKI_DIR}/doh.ext" -out "${PKI_DIR}/doh.crt" 2>/dev/null
+    # Сервер отдаёт цепочку целиком: dnscrypt-proxy ищет закреплённый хэш (CA)
+    # среди сертификатов, присланных сервером.
+    cat "${PKI_DIR}/doh.crt" "${PKI_DIR}/ca.crt" >"${PKI_DIR}/doh-fullchain.crt"
+    install -m 0644 "${PKI_DIR}/ca.crt" /usr/local/share/ca-certificates/routerd-lab-ca.crt
+    update-ca-certificates >/dev/null
+    log_info "CA стенда создан: ${PKI_DIR}/ca.crt"
+}
+
+install_dns_chain() {
+    local dohd="${REPO_DIR}/bin/dohd-linux-arm64"
+    [[ -x "${dohd}" ]] || die "нет ${dohd} — соберите на Mac: make build-lab"
+    install -m 0755 "${dohd}" /usr/local/bin/lab-dohd
+    pki
+
+    unit lab-dns-public inet "/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/dev/null --pid-file= --log-facility=- \
+--listen-address=203.0.113.54 --bind-interfaces --no-resolv --log-queries --local-ttl=120 ${PUBLIC_ZONES}"
+    unit lab-dohd inet "/usr/local/bin/lab-dohd -listen 203.0.113.55:443 \
+-cert ${PKI_DIR}/doh-fullchain.crt -key ${PKI_DIR}/doh.key -upstream 203.0.113.54:53"
+
+    if ! command -v pihole >/dev/null || ! command -v dnscrypt-proxy >/dev/null; then
+        log_warn "Pi-hole/dnscrypt-proxy не установлены (lab.sh bootstrap-dns) — вместо них заглушка"
+        unit pihole-FTL rpi "/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/dev/null --pid-file= --log-facility=- \
+--port=5353 --listen-address=127.0.0.1 --bind-interfaces --no-resolv --log-queries --server=203.0.113.54"
+        return
+    fi
+
+    # dnscrypt-proxy: socket activation на 127.0.0.1:5053, как override в rpi5-router;
+    # единственный сервер — DoH стенда, закреплённый по хэшу CA.
+    local stamp
+    stamp="$(/usr/local/bin/lab-dohd -stamp -ca "${PKI_DIR}/ca.crt" -addr 203.0.113.55 -host doh.example)"
+    mkdir -p "${LAB_ETC}"
+    sed "s|@STAMP@|${stamp}|" "${LAB_DIR}/conf/dnscrypt-proxy.toml" >"${LAB_ETC}/dnscrypt-proxy.toml"
+    mkdir -p "${UNIT_DIR}/dnscrypt-proxy.socket.d" "${UNIT_DIR}/dnscrypt-proxy.service.d"
+    cat >"${UNIT_DIR}/dnscrypt-proxy.socket.d/lab.conf" <<EOF
+[Socket]
+NetworkNamespacePath=/run/netns/lab-rpi
+ListenStream=
+ListenDatagram=
+ListenStream=127.0.0.1:5053
+ListenDatagram=127.0.0.1:5053
+EOF
+    cat >"${UNIT_DIR}/dnscrypt-proxy.service.d/lab.conf" <<EOF
+[Service]
+NetworkNamespacePath=/run/netns/lab-rpi
+ExecStart=
+ExecStart=/usr/sbin/dnscrypt-proxy -config ${LAB_ETC}/dnscrypt-proxy.toml
+EOF
+
+    # Pi-hole: в namespace rpi, порт 5353, upstream — dnscrypt-proxy, как на бою.
+    in_ns pihole-FTL rpi
+    systemctl stop pihole-FTL 2>/dev/null || true
+    pihole-FTL --config dns.port 5353 >/dev/null
+    pihole-FTL --config dns.upstreams '["127.0.0.1#5053"]' >/dev/null
+    pihole-FTL --config dns.listeningMode ALL >/dev/null
+    # ads.example — в denylist: проверка, что фильтрация Pi-hole в цепочке работает.
+    pihole-FTL sqlite3 /etc/pihole/gravity.db \
+        "INSERT OR IGNORE INTO domainlist (type, domain, enabled, comment) VALUES (1, 'ads.example', 1, 'routerd lab');" >/dev/null
+}
+
 ctl() { ROUTERD_CONFIG_DIR="${CONFIG_DIR}" /usr/local/bin/router_service_ctl "$@"; }
 
 cmd_install() {
@@ -377,17 +506,14 @@ cmd_install() {
     systemctl disable --now routerd-dnsmasq 2>/dev/null || true
     rm -rf "${UNIT_DIR}/routerd-dnsmasq.service" "${UNIT_DIR}/routerd-dnsmasq.service.d"
 
-    # «Pi-hole»: заглушка на 127.0.0.1:5353 в namespace rpi, знает тестовые зоны.
-    unit pihole-FTL rpi "/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/dev/null --pid-file= --log-facility=- \
---port=5353 --listen-address=127.0.0.1 --bind-interfaces --no-resolv --log-queries --local-ttl=120 \
---address=/vpn.test/203.0.113.20 --address=/vpn.test/2001:db8::20 \
---address=/direct.test/203.0.113.10 --address=/direct.test/2001:db8::10"
-    # DNS внутренней зоны corp.test (для dns_override.txt) на 203.0.113.53.
+    # DNS-цепочка как на бою: Pi-hole :5353 → dnscrypt-proxy :5053 → DoH стенда.
+    install_dns_chain
+    # DNS внутренней зоны corp.example (для dns_override.txt) на 203.0.113.53.
     unit lab-dns-corp inet "/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/dev/null --pid-file= --log-facility=- \
---listen-address=203.0.113.53 --bind-interfaces --no-resolv --log-queries --address=/corp.test/203.0.113.10"
-    # UDP-сервис на адресе vpn.test: по журналу видно, откуда пришёл UDP.
+--listen-address=203.0.113.53 --bind-interfaces --no-resolv --log-queries --address=/corp.example/203.0.113.10"
+    # UDP-сервис на адресе vpn.example: по журналу видно, откуда пришёл UDP.
     unit lab-dns-vpn inet "/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/dev/null --pid-file= --log-facility=- \
---listen-address=203.0.113.20 --bind-interfaces --no-resolv --log-queries --address=/udp.test/203.0.113.20"
+--listen-address=203.0.113.20 --bind-interfaces --no-resolv --log-queries --address=/udp.example/203.0.113.20"
 
     # Сайты: busybox httpd пишет в журнал адрес клиента каждого запроса.
     mkdir -p "${SRV_DIR}/direct" "${SRV_DIR}/vpn"
@@ -402,7 +528,8 @@ cmd_install() {
     gost_client "$(conf_get VPN_MODE)"
 
     systemctl daemon-reload
-    systemctl restart pihole-FTL lab-dns-corp lab-dns-vpn lab-web-direct lab-web-vpn lab-gost-exit
+    systemctl restart lab-dns-public lab-dohd lab-dns-corp lab-dns-vpn lab-web-direct lab-web-vpn lab-gost-exit
+    systemctl restart dnscrypt-proxy.socket pihole-FTL
 
     # Клиент: пока DHCP не перенесён в routerd (этап 4) — статический адрес.
     nsx client ip addr replace 192.168.3.50/24 dev eth0
@@ -500,20 +627,25 @@ ecs_sent() {
     cap="$(mktemp)"
     nsx rpi timeout 4 tcpdump -i lo -n -x -c 1 "udp dst port 5353" >"${cap}" 2>/dev/null &
     sleep 0.5
-    resolve client direct.test 192.168.3.2 >/dev/null || true
+    resolve client direct.example 192.168.3.2 >/dev/null || true
     wait
     grep -E '^\s+0x' "${cap}" | cut -d: -f2 | tr -d ' \n' | grep -q "0008000800012000c0a80332"
     local rc=$?
     rm -f "${cap}"
     return ${rc}
 }
-dns_down() { ! nsx client dig +short +time=1 +tries=1 vpn.test @192.168.3.2 >/dev/null 2>&1; }
-# Откуда пришёл последний UDP-запрос к сервису на адресе vpn.test.
-udp_seen() {
-    nsx client dig +short +time=2 +tries=1 udp.test @203.0.113.20 >/dev/null 2>&1 || true
-    journalctl -u lab-dns-vpn -n 5 --no-pager -o cat | grep 'query\[A\] udp.test' | tail -1 | grep -oE '[0-9]+(\.[0-9]+){3}$'
+doh_saw() { journalctl -u lab-dohd -n 50 --no-pager -o cat | grep -q "doh query $1\."; }
+# Клиент запроса по журналу Pi-hole (API без пароля на стенде).
+pihole_client_is() {
+    nsx rpi curl -fsS "http://127.0.0.1/api/queries?domain=$1&length=5" | grep -q "\"ip\":\"$2\""
 }
-# ICMP к vpn.test пришёл в «интернет» со стороны удалённого узла.
+dns_down() { ! nsx client dig +short +time=1 +tries=1 vpn.example @192.168.3.2 >/dev/null 2>&1; }
+# Откуда пришёл последний UDP-запрос к сервису на адресе vpn.example.
+udp_seen() {
+    nsx client dig +short +time=2 +tries=1 udp.example @203.0.113.20 >/dev/null 2>&1 || true
+    journalctl -u lab-dns-vpn -n 5 --no-pager -o cat | grep 'query\[A\] udp.example' | tail -1 | grep -oE '[0-9]+(\.[0-9]+){3}$'
+}
+# ICMP к vpn.example пришёл в «интернет» со стороны удалённого узла.
 icmp_via_exit() {
     local cap
     cap="$(mktemp)"
@@ -547,74 +679,82 @@ cmd_test() {
     log_info "Режим ${mode}"
 
     log_info "DNS"
-    expect "vpn.test резолвится через routerd → «Pi-hole»" eq "$(resolve client vpn.test 192.168.3.2)" 203.0.113.20
-    expect "адрес vpn.test попал в vpn_dynamic" set_has vpn_dynamic 203.0.113.20
+    expect "vpn.example резолвится через routerd → «Pi-hole»" eq "$(resolve client vpn.example 192.168.3.2)" 203.0.113.20
+    expect "адрес vpn.example попал в vpn_dynamic" set_has vpn_dynamic 203.0.113.20
     expect "у адреса из DNS есть срок жизни (VPN_DYNAMIC_TIMEOUT)" set_has vpn_dynamic "203.0.113.20 .*expires"
-    expect "direct.test резолвится" eq "$(resolve client direct.test 192.168.3.2)" 203.0.113.10
-    expect "адрес direct.test в set не попал" not set_has vpn_dynamic 203.0.113.10
-    expect "corp.test (dns_override) отвечает свой DNS 203.0.113.53" eq "$(resolve client corp.test 192.168.3.2)" 203.0.113.10
-    expect "DNS слушается и на loopback RPi (для GOST)" eq "$(resolve rpi vpn.test 127.0.0.1)" 203.0.113.20
-    expect "срок жизни адреса — max(TTL 120s, VPN_DYNAMIC_TIMEOUT 30s) = 2m" set_has vpn_dynamic "203.0.113.20 timeout 2m"
-    expect "AAAA для vpn.test отфильтрован (FILTER_AAAA=vpn)" eq "$(resolve6 vpn.test)" ""
-    expect "AAAA для direct.test проходит" eq "$(resolve6 direct.test)" 2001:db8::10
+    expect "direct.example резолвится" eq "$(resolve client direct.example 192.168.3.2)" 203.0.113.10
+    expect "адрес direct.example в set не попал" not set_has vpn_dynamic 203.0.113.10
+    expect "corp.example (dns_override) отвечает свой DNS 203.0.113.53" eq "$(resolve client corp.example 192.168.3.2)" 203.0.113.10
+    expect "DNS слушается и на loopback RPi (для GOST)" eq "$(resolve rpi vpn.example 127.0.0.1)" 203.0.113.20
+    # TTL 120 у источника; через кэш Pi-hole может прийти чуть меньше — но больше 30s.
+    expect "срок жизни адреса — max(TTL ≈120s, VPN_DYNAMIC_TIMEOUT 30s)" set_has vpn_dynamic "203.0.113.20 timeout [12]m"
+    expect "AAAA для vpn.example отфильтрован (FILTER_AAAA=vpn)" eq "$(resolve6 vpn.example)" ""
+    expect "AAAA для direct.example проходит" eq "$(resolve6 direct.example)" 2001:db8::10
     expect "bogus-priv: PTR частной сети — NXDOMAIN без upstream" eq "$(rcode -x 192.168.3.77)" NXDOMAIN
-    expect "ECS: «Pi-hole» видит адрес клиента 192.168.3.50" ecs_sent
+    expect "ECS: routerd передаёт в Pi-hole адрес клиента 192.168.3.50" ecs_sent
+    if command -v pihole >/dev/null; then
+        local probe="chk${RANDOM}.direct.example"
+        resolve client "${probe}" 192.168.3.2 >/dev/null || true
+        expect "цепочка до DoH: запрос дошёл до DoH-сервера стенда" doh_saw "${probe}"
+        expect "Pi-hole видит реального клиента 192.168.3.50 (ECS)" wait_for 3 pihole_client_is "${probe}" 192.168.3.50
+        expect "Pi-hole блокирует ads.example из denylist" eq "$(resolve client ads.example 192.168.3.2)" 0.0.0.0
+    fi
 
     log_info "Маршрутизация"
-    fetch vpn.test
-    expect "vpn.test: запрос пришёл с удалённого узла 198.51.100.6 (через туннель)" eq "$(seen_by lab-web-vpn)" 198.51.100.6
-    fetch direct.test
-    expect "direct.test: запрос пришёл с WAN роутера 198.51.100.2 (напрямую)" eq "$(seen_by lab-web-direct)" 198.51.100.2
+    fetch vpn.example
+    expect "vpn.example: запрос пришёл с удалённого узла 198.51.100.6 (через туннель)" eq "$(seen_by lab-web-vpn)" 198.51.100.6
+    fetch direct.example
+    expect "direct.example: запрос пришёл с WAN роутера 198.51.100.2 (напрямую)" eq "$(seen_by lab-web-direct)" 198.51.100.2
 
     log_info "UDP и ICMP"
     case ${mode} in
     redirect)
-        expect "UDP к vpn.test идёт напрямую (режим redirect — только TCP)" eq "$(udp_seen)" 198.51.100.2
-        expect "ICMP к vpn.test идёт напрямую" not icmp_via_exit
+        expect "UDP к vpn.example идёт напрямую (режим redirect — только TCP)" eq "$(udp_seen)" 198.51.100.2
+        expect "ICMP к vpn.example идёт напрямую" not icmp_via_exit
         ;;
     tproxy)
-        expect "UDP к vpn.test идёт через туннель" eq "$(udp_seen)" 198.51.100.6
-        expect "ICMP к vpn.test идёт напрямую (tproxy — TCP и UDP)" not icmp_via_exit
+        expect "UDP к vpn.example идёт через туннель" eq "$(udp_seen)" 198.51.100.6
+        expect "ICMP к vpn.example идёт напрямую (tproxy — TCP и UDP)" not icmp_via_exit
         ;;
     route)
-        expect "UDP к vpn.test идёт через туннель" eq "$(udp_seen)" 198.51.100.6
-        expect "ICMP к vpn.test идёт через туннель (L3)" icmp_via_exit
+        expect "UDP к vpn.example идёт через туннель" eq "$(udp_seen)" 198.51.100.6
+        expect "ICMP к vpn.example идёт через туннель (L3)" icmp_via_exit
         ;;
     esac
 
     log_info "QUIC"
-    expect "UDP/443 к vpn.test отклоняется (ICMP port unreachable)" quic_refused 203.0.113.20
-    expect "UDP/443 к direct.test не отклоняется" not quic_refused 203.0.113.10
+    expect "UDP/443 к vpn.example отклоняется (ICMP port unreachable)" quic_refused 203.0.113.20
+    expect "UDP/443 к direct.example не отклоняется" not quic_refused 203.0.113.10
 
     log_info "CLI → SIGHUP → nftables"
     # Освежаем адрес из DNS: на стенде он живёт VPN_DYNAMIC_TIMEOUT=30s, а
     # проверяется сохранение при reload, а не срок жизни.
-    resolve client vpn.test 192.168.3.2 >/dev/null
+    resolve client vpn.example 192.168.3.2 >/dev/null
     ctl add-vpn-ip 203.0.113.10 >/dev/null
     expect "add-vpn-ip: 203.0.113.10 в vpn_static" set_has vpn_static 203.0.113.10
-    fetch direct.test
-    expect "direct.test теперь идёт через туннель" eq "$(seen_by lab-web-direct)" 198.51.100.6
+    fetch direct.example
+    expect "direct.example теперь идёт через туннель" eq "$(seen_by lab-web-direct)" 198.51.100.6
     ctl remove-vpn-ip 203.0.113.10 >/dev/null
-    fetch direct.test
+    fetch direct.example
     expect "remove-vpn-ip: снова напрямую" eq "$(seen_by lab-web-direct)" 198.51.100.2
     expect "после reload адрес из DNS в vpn_dynamic сохранился" set_has vpn_dynamic 203.0.113.20
 
     log_info "VPN_FAILOVER"
     systemctl stop gost-run
-    expect "closed: туннель упал — vpn.test недоступен" wait_for 6 not web_ok vpn.test
-    expect "closed: direct.test работает" web_ok direct.test
+    expect "closed: туннель упал — vpn.example недоступен" wait_for 6 not web_ok vpn.example
+    expect "closed: direct.example работает" web_ok direct.example
     cmd_mode "${mode}" open >/dev/null
     systemctl stop gost-run
     expect "open: туннель упал — перехват снят" wait_for 6 status_has "перехват снят"
-    fetch vpn.test
-    expect "open: vpn.test идёт напрямую" eq "$(seen_by lab-web-vpn)" 198.51.100.2
+    fetch vpn.example
+    expect "open: vpn.example идёт напрямую" eq "$(seen_by lab-web-vpn)" 198.51.100.2
     systemctl start gost-run
     expect "open: туннель вернулся — перехват восстановлен" wait_for 10 not status_has "перехват снят"
-    wait_for 10 web_ok vpn.test || true
-    fetch vpn.test
-    expect "open: vpn.test снова через туннель" eq "$(seen_by lab-web-vpn)" 198.51.100.6
+    wait_for 10 web_ok vpn.example || true
+    fetch vpn.example
+    expect "open: vpn.example снова через туннель" eq "$(seen_by lab-web-vpn)" 198.51.100.6
     cmd_mode "${mode}" closed >/dev/null
-    wait_for 10 web_ok vpn.test || true
+    wait_for 10 web_ok vpn.example || true
 
     log_info "Остановка и запуск"
     ctl stop >/dev/null
@@ -632,7 +772,7 @@ cmd_test_all() {
     local m failed=()
     for m in redirect tproxy route; do
         cmd_mode "${m}" closed
-        wait_for 10 web_ok vpn.test || true
+        wait_for 10 web_ok vpn.example || true
         (cmd_test) || failed+=("${m}")
     done
     cmd_mode redirect closed
@@ -642,6 +782,7 @@ cmd_test_all() {
 
 case "${1:-help}" in
 bootstrap) cmd_bootstrap ;;
+bootstrap-dns) cmd_bootstrap_dns ;;
 check-kernel) cmd_check_kernel ;;
 up) cmd_up ;;
 down) cmd_down ;;
