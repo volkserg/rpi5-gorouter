@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	sddbus "github.com/coreos/go-systemd/v22/dbus"
@@ -88,6 +89,24 @@ func (m *dbusManager) StatusText(ctx context.Context, unit string) (string, erro
 	}
 	s, _ := p.Value.Value().(string)
 	return s, nil
+}
+
+func (m *dbusManager) SocketListen(ctx context.Context, unit string) ([]string, error) {
+	p, err := m.c.GetUnitTypePropertyContext(ctx, unit, "Socket", "Listen")
+	if err != nil {
+		return nil, err
+	}
+	// a(ss): (тип, адрес), например ("Datagram", "127.0.0.1:5053").
+	pairs, _ := p.Value.Value().([][]any)
+	var out []string
+	for _, pair := range pairs {
+		if len(pair) == 2 {
+			if addr, ok := pair[1].(string); ok && !slices.Contains(out, addr) {
+				out = append(out, addr)
+			}
+		}
+	}
+	return out, nil
 }
 
 func (m *dbusManager) Enabled(ctx context.Context, unit string) (bool, error) {

@@ -5,14 +5,15 @@
 и подсетям через VPN-туннель (например, к корпоративной сети) на одном порту `eth0`.
 Замена bash-версии без вызова внешних утилит в рабочем режиме.
 
-Статус: **этап 4** — демон `routerd run`: sysctl, правила nftables и policy
+Статус: **этап 5** — демон `routerd run`: sysctl, правила nftables и policy
 routing через netlink, три режима отправки трафика в туннель (`redirect`,
 `tproxy`, `route`) с `VPN_FAILOVER`; встроенный DNS-прокси на :53 (вместо
 dnsmasq) — адреса доменов из списка попадают в nft-set со сроком
 max(TTL, `VPN_DYNAMIC_TIMEOUT`), ECS в Pi-hole, фильтр AAAA, override-upstream;
 DHCP-сервер (вместо Kea) с арендами в `/var/lib/routerd/leases.json` и
-именами клиентов в зоне `*.lan`; все команды `router_service_ctl`, кроме
-`apply-network`.
+именами клиентов в зоне `*.lan`; сверка ключей цепочки DNS в `pihole.toml`;
+`apply-network` через NetworkManager по D-Bus с автооткатом. Все команды
+`router_service_ctl` перенесены.
 Архитектура, решения и план — в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Сборка
@@ -29,6 +30,9 @@ routerd ctl help
 routerd ctl status
 routerd ctl check-config
 sudo routerd ctl start
+sudo routerd ctl apply-network --dry-run   # что изменится в NetworkManager
+sudo routerd ctl apply-network             # применить; затем в течение 60 с:
+sudo routerd ctl apply-network --confirm   # иначе NetworkManager откатит сам
 ```
 
 Порядок запуска: `dnscrypt-proxy.socket` → `dnscrypt-proxy` → `pihole-FTL` →

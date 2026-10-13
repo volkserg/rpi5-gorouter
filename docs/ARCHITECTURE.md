@@ -38,7 +38,8 @@ UDP/443 к VPN-адресам → REJECT icmp port-unreachable (браузер �
 
 - Один бинарник `routerd`; CLI — `routerd ctl …` или symlink `router_service_ctl`.
 - Работает от root с ограниченным `CapabilityBoundingSet`
-  (CAP_NET_ADMIN, CAP_NET_BIND_SERVICE; CAP_NET_RAW не нужен — DHCP отвечает broadcast).
+  (CAP_NET_ADMIN, CAP_NET_BIND_SERVICE; CAP_NET_RAW не нужен — DHCP отвечает
+  broadcast; CAP_DAC_OVERRIDE, CAP_CHOWN, CAP_FOWNER — только для правки pihole.toml).
 - nft-set: `vpn_static` (interval — IP/CIDR из файла, слияние перекрытий)
   и `vpn_dynamic` (timeout — адреса из DNS, `max(TTL, 24h)`, продление при каждом ответе).
 - DNS: ECS /32 в Pi-hole (реальные клиенты в статистике); AAAA для VPN-доменов
@@ -55,7 +56,9 @@ UDP/443 к VPN-адресам → REJECT icmp port-unreachable (браузер �
 - Новые ключи `router.conf` допустимы, всегда с дефолтами: `VPN_MODE`, `VPN_FAILOVER`,
   `VPN_PORT`, `VPN_TUN`, `QUIC_REJECT`, `VPN_DYNAMIC_TIMEOUT` (24h),
   `DNS_UPSTREAM` (`127.0.0.1#5353`), `FILTER_AAAA` (`vpn`), `DNS_ECS` (`yes`),
-  `DHCP_ENABLED` (`yes`), `DHCP_LEASE_TIME` (`24h`), `LOCAL_DOMAIN` (`lan`).
+  `DHCP_ENABLED` (`yes`), `DHCP_LEASE_TIME` (`24h`), `LOCAL_DOMAIN` (`lan`),
+  `PIHOLE_MANAGE` (`yes`), `PIHOLE_TOML` (`/etc/pihole/pihole.toml`),
+  `DNSCRYPT_ADDR` (`127.0.0.1#5053`).
 - `routerd.service` — `Type=notify-reload`: `reload-vpn-domains` завершается,
   когда routerd применил списки; статус применения — в `StatusText` юнита.
 - DNS-прокси (этап 3): слушает адрес RPi и `127.0.0.1` на :53 (как dnsmasq с
@@ -89,6 +92,31 @@ UDP/443 к VPN-адресам → REJECT icmp port-unreachable (браузер �
   (истекла не раньше срока аренды назад). DNS-прокси отвечает на `имя.lan` и PTR
   адресов из аренд сам, никогда не пересылая в Pi-hole (тот ответил бы на `.lan`
   NXDOMAIN); чужие имена в `.lan` — NXDOMAIN.
+- Pi-hole (этап 5, `PIHOLE_MANAGE=yes`): при старте и SIGHUP routerd сверяет в
+  `pihole.toml` ключи цепочки — `dns.port` (порт из `DNS_UPSTREAM`),
+  `dns.upstreams` (`DNSCRYPT_ADDR`), `dns.EDNS0ECS` (`DNS_ECS`) и свою запись
+  `dns.revServers` (`true,<LAN>,127.0.0.1#53,<LOCAL_DOMAIN>` — Pi-hole спрашивает
+  имена клиентов у routerd; чужие записи сохраняются). При расхождении — в
+  фоне, после готовности routerd: дождаться, пока FTL ответит на DNS (только
+  что запущенный FTL не реагирует на SIGTERM и через минуту добивается
+  SIGKILL), остановить его по D-Bus, точечно заменить строки (многострочные
+  массивы FTL, хвостовые комментарии; права и владелец сохраняются), запустить.
+  Для этого юниту нужны `CAP_DAC_OVERRIDE`, `CAP_CHOWN`, `CAP_FOWNER` и
+  `ReadWritePaths=/etc/pihole`. Состояние — в `status`.
+- dnscrypt-proxy: конфиг ведёт пользователь; routerd только проверяет по D-Bus,
+  что `dnscrypt-proxy.socket` слушает `DNSCRYPT_ADDR`, и показывает это в `status`.
+- `apply-network` (этап 5): как `nmcli con mod … && nmcli con up` в bash-версии,
+  но через D-Bus NetworkManager. Подключение — `NM_CONN`, иначе ethernet-подключение
+  `IFACE`. Перед изменением — `CheckpointCreate` на устройство с откатом через 60 с;
+  профиль обновляется (`Update2`, на диск — для netplan-профиля NM пишет и YAML),
+  устаревший ключ `addresses` удаляется (иначе NM игнорирует `address-data` и
+  `gateway`), DNS — ключом `dns`; затем активация и ожидание состояния
+  «активировано». Ошибка — немедленный откат. Успех — нужно подтвердить
+  `apply-network --confirm` за 60 с, иначе NetworkManager вернёт прежние
+  настройки сам (защита от потери доступа к RPi). `--rollback` — откат сразу,
+  `--dry-run` — показать изменения. После применения routerd перечитывает
+  конфиг (адрес RPi нужен DNS и DHCP). На стенде не проверяется (NetworkManager
+  в namespace не работает) — только юнит-тесты с подделкой D-Bus.
 - Перезагрузка сохраняет адреса в `vpn_dynamic`; если параметры set'ов изменились
   (например, таймаут), таблица пересоздаётся — не все ядра обновляют их на месте.
 
@@ -167,9 +195,9 @@ internal/daemon/      routerd run: применение, sd_notify (notify-reloa
                       слежение за туннелем, VPN_FAILOVER, очистка
 deploy/systemd/       routerd.service
 testbed/              стенд: lab.sh, эталон ядра RPi, конфиги стенда
+internal/pihole/      сверка и точечная правка ключей цепочки в pihole.toml
+internal/netcfg/      apply-network: NetworkManager по D-Bus + Checkpoint
 — далее по этапам —
-internal/netcfg/      NetworkManager D-Bus / netlink (проверка)
-internal/managed/     pihole.toml, dnscrypt-proxy.toml
 internal/control/     unix-сокет CLI ↔ демон
 ```
 
@@ -190,7 +218,7 @@ Linux-специфичное — под `//go:build linux`, проверяетс
 | 2a | режимы `tproxy` и `route`, `VPN_FAILOVER`, policy routing (`internal/routing`); стенд — все режимы × closed/open | dnsmasq, Kea, nmcli |
 | 3 | DNS-прокси на Go вместо dnsmasq; `routerd-dnsmasq` и пакет `internal/dnsmasq` удалены. Теневой режим не понадобился — боевая RPi до проверки всего на стенде не трогается | Kea, nmcli |
 | 4 | DHCP вместо Kea (`insomniacslk/dhcp`), имена `*.lan` и PTR из аренд; клиент стенда получает адрес по DHCP | nmcli |
-| 5 | NetworkManager D-Bus, pihole/dnscrypt | — |
+| 5 | `apply-network` (NetworkManager D-Bus + Checkpoint), сверка `pihole.toml`, проверка `dnscrypt-proxy.socket` | — |
 | 6 | install.sh, completions, документация | — |
 
 ## Тестовый стенд

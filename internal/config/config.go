@@ -73,6 +73,13 @@ type Config struct {
 	DHCPLeaseTime time.Duration
 	// LocalDomain — домен LAN (опция 15) и локальная DNS-зона имён клиентов.
 	LocalDomain string
+
+	// PiholeManage — сверять и править ключи цепочки в pihole.toml.
+	PiholeManage bool
+	// PiholeTOML — путь к конфигу Pi-hole.
+	PiholeTOML string
+	// DNSCryptAddr — адрес dnscrypt-proxy (upstream Pi-hole).
+	DNSCryptAddr netip.AddrPort
 }
 
 // Значения FILTER_AAAA.
@@ -108,6 +115,9 @@ var defaults = map[string]string{
 	"DHCP_ENABLED":        "yes",
 	"DHCP_LEASE_TIME":     "24h",
 	"LOCAL_DOMAIN":        "lan",
+	"PIHOLE_MANAGE":       "yes",
+	"PIHOLE_TOML":         "/etc/pihole/pihole.toml",
+	"DNSCRYPT_ADDR":       "127.0.0.1#5053",
 }
 
 // Warning — некритичное замечание к конфигу (неизвестный ключ, отсутствующий файл).
@@ -242,6 +252,20 @@ func FromValues(values map[string]string) (*Config, error) {
 	cfg.LocalDomain = strings.ToLower(strings.TrimSuffix(get("LOCAL_DOMAIN"), "."))
 	if err := domain.Validate(cfg.LocalDomain); err != nil {
 		errs = append(errs, fmt.Errorf("LOCAL_DOMAIN=%q: %v", get("LOCAL_DOMAIN"), err))
+	}
+	if b, err := parseBool(get("PIHOLE_MANAGE")); err != nil {
+		errs = append(errs, fmt.Errorf("PIHOLE_MANAGE: %w", err))
+	} else {
+		cfg.PiholeManage = b
+	}
+	cfg.PiholeTOML = get("PIHOLE_TOML")
+	if !strings.HasPrefix(cfg.PiholeTOML, "/") {
+		errs = append(errs, fmt.Errorf("PIHOLE_TOML=%q: ожидается абсолютный путь", cfg.PiholeTOML))
+	}
+	if ap, err := parseAddrPort(get("DNSCRYPT_ADDR"), 53); err != nil {
+		errs = append(errs, fmt.Errorf("DNSCRYPT_ADDR: %w", err))
+	} else {
+		cfg.DNSCryptAddr = ap
 	}
 	if p, err := netip.ParsePrefix(get("LAN_SUBNET")); err != nil || !p.Addr().Is4() {
 		errs = append(errs, fmt.Errorf("LAN_SUBNET=%q: ожидается подсеть IPv4 в виде a.b.c.d/N", get("LAN_SUBNET")))

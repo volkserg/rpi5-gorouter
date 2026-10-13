@@ -14,6 +14,7 @@ import (
 	"github.com/volkserg/rpi5-gorouter/internal/config"
 	"github.com/volkserg/rpi5-gorouter/internal/dhcp"
 	"github.com/volkserg/rpi5-gorouter/internal/lists"
+	"github.com/volkserg/rpi5-gorouter/internal/netcfg"
 	"github.com/volkserg/rpi5-gorouter/internal/services"
 )
 
@@ -32,6 +33,8 @@ type Env struct {
 	Services func(context.Context) (services.Manager, error)
 	// Journal печатает последние lines строк журнала юнита в w.
 	Journal func(ctx context.Context, w io.Writer, unit string, lines int) error
+	// NM подключается к NetworkManager по D-Bus.
+	NM func() (netcfg.NM, func(), error)
 }
 
 // DefaultEnv — окружение процесса: каталог конфигов из ROUTERD_CONFIG_DIR
@@ -55,6 +58,13 @@ func DefaultEnv() Env {
 		IsRoot:    func() bool { return os.Geteuid() == 0 },
 		Services:  services.Connect,
 		Journal:   journalctl,
+		NM: func() (netcfg.NM, func(), error) {
+			n, err := netcfg.ConnectNM()
+			if err != nil {
+				return nil, nil, err
+			}
+			return n, n.Close, nil
+		},
 	}
 }
 
@@ -83,7 +93,7 @@ var commands = []command{
 	{"start", "", "Запустить все компоненты", cmdStart},
 	{"stop", "", "Остановить все компоненты", cmdStop},
 	{"restart", "", "Перезапустить все компоненты", cmdRestart},
-	{"apply-network", "", "Применить сеть из router.conf (NetworkManager)", nil},
+	{"apply-network", "[--dry-run|--confirm|--rollback]", "Применить сеть из router.conf (NetworkManager)", cmdApplyNetwork},
 	{"logs", "", "Показать логи", cmdLogs},
 	{"check-config", "", "Проверить router.conf и списки на ошибки", cmdCheckConfig},
 	{},

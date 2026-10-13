@@ -13,9 +13,13 @@ Restart=on-failure
 RestartSec=3
 # /var/lib/routerd — аренды DHCP (leases.json).
 StateDirectory=routerd
+# Сверка ключей цепочки DNS в pihole.toml (PIHOLE_MANAGE).
+ReadWritePaths=-/etc/pihole
 
 # Права: root нужен для управления юнитами по D-Bus, остальное урезано.
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+# CAP_DAC_OVERRIDE, CAP_CHOWN, CAP_FOWNER — только для атомарной правки
+# /etc/pihole/pihole.toml (каталог и файл принадлежат пользователю pihole).
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

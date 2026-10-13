@@ -397,11 +397,16 @@ EOF
 }
 
 # in_ns <юнит> <namespace> — drop-in, запускающий боевой юнит в namespace стенда.
+# resolv.conf основного namespace VM (DNS OrbStack) в namespace стенда
+# недоступен — подставляем DNS «интернета» стенда, как рабочие DNS1/DNS2 на бою
+# (иначе, например, FTL при остановке подолгу ждёт резолва NTP-сервера).
 in_ns() {
-    mkdir -p "${UNIT_DIR}/$1.service.d"
+    mkdir -p "${UNIT_DIR}/$1.service.d" "/etc/netns/lab-$2"
+    echo "nameserver 203.0.113.54" >"/etc/netns/lab-$2/resolv.conf"
     cat >"${UNIT_DIR}/$1.service.d/lab-netns.conf" <<EOF
 [Service]
 NetworkNamespacePath=/run/netns/lab-$2
+BindReadOnlyPaths=/etc/netns/lab-$2/resolv.conf:/etc/resolv.conf
 EOF
 }
 
@@ -482,16 +487,27 @@ ExecStart=
 ExecStart=/usr/sbin/dnscrypt-proxy -config ${LAB_ETC}/dnscrypt-proxy.toml
 EOF
 
-    # Pi-hole: в namespace rpi, порт 5353, upstream — dnscrypt-proxy, как на бою.
+    # Pi-hole: в namespace rpi. Ключи цепочки (порт, upstream, ECS, revServers)
+    # сверяет и правит routerd (PIHOLE_MANAGE) — намеренно портим их, чтобы
+    # проверить это: upstream мимо dnscrypt-proxy, ECS выключен.
     in_ns pihole-FTL rpi
     systemctl stop pihole-FTL 2>/dev/null || true
-    pihole-FTL --config dns.port 5353 >/dev/null
-    pihole-FTL --config dns.upstreams '["127.0.0.1#5053"]' >/dev/null
+    pihole_break
     pihole-FTL --config dns.listeningMode ALL >/dev/null
     # ads.example — в denylist: проверка, что фильтрация Pi-hole в цепочке работает.
     pihole-FTL sqlite3 /etc/pihole/gravity.db \
         "INSERT OR IGNORE INTO domainlist (type, domain, enabled, comment) VALUES (1, 'ads.example', 1, 'routerd lab');" >/dev/null
 }
+
+# pihole_break портит ключи цепочки в pihole.toml (FTL должен быть остановлен).
+pihole_break() {
+    pihole-FTL --config dns.port 5353 >/dev/null
+    pihole-FTL --config dns.upstreams '["203.0.113.54"]' >/dev/null
+    pihole-FTL --config dns.EDNS0ECS false >/dev/null
+}
+pihole_key() { pihole-FTL --config "$1" 2>/dev/null; }
+pihole_key_is() { [[ "$(pihole_key "$1")" == "$2" ]]; }
+pihole_ready() { systemctl is-active --quiet pihole-FTL && nsx rpi dig +short +time=1 +tries=1 -p 5353 pi.hole @127.0.0.1 >/dev/null; }
 
 ctl() { ROUTERD_CONFIG_DIR="${CONFIG_DIR}" /usr/local/bin/router_service_ctl "$@"; }
 
@@ -541,6 +557,9 @@ cmd_install() {
     # restart, а не start: при переустановке должен заработать новый бинарник.
     log_info "Установлено. Перезапуск стека как на бою: router_service_ctl restart"
     ctl restart
+    # routerd исправляет pihole.toml в фоне — дождаться, пока Pi-hole снова в строю.
+    wait_for 120 pihole_key_is dns.upstreams "[ 127.0.0.1#5053 ]" || die "routerd не исправил pihole.toml"
+    wait_for 60 pihole_ready || die "Pi-hole не поднялся после правки конфига"
     # Клиент получает адрес по DHCP от routerd.
     dhcp_client client >/dev/null || die "клиент не получил адрес по DHCP"
     log_info "Клиент получил по DHCP $(client_ip)"
@@ -759,6 +778,20 @@ cmd_test() {
         expect "цепочка до DoH: запрос дошёл до DoH-сервера стенда" doh_saw "${probe}"
         expect "Pi-hole видит реального клиента (ECS)" wait_for 3 pihole_client_is "${probe}" "$(client_ip)"
         expect "Pi-hole блокирует ads.example из denylist" eq "$(resolve client ads.example 192.168.3.2)" 0.0.0.0
+
+        log_info "Pi-hole под управлением routerd"
+        expect "routerd выставил upstream Pi-hole — dnscrypt-proxy" eq "$(pihole_key dns.upstreams)" "[ 127.0.0.1#5053 ]"
+        expect "routerd включил ECS в Pi-hole" eq "$(pihole_key dns.EDNS0ECS)" true
+        expect "routerd добавил revServers для LAN" bash -c "pihole-FTL --config dns.revServers | grep -q 'true,192.168.3.0/24,127.0.0.1#53,lan'"
+        expect "Pi-hole знает имя клиента (PTR через Pi-hole → routerd)" \
+            eq "$(nsx rpi dig +short -p 5353 -x "$(client_ip)" @127.0.0.1)" labclient.lan.
+        systemctl stop pihole-FTL
+        pihole_break
+        systemctl start pihole-FTL
+        ctl reload-vpn-domains >/dev/null
+        expect "reload исправляет расхождение в pihole.toml" wait_for 60 pihole_key_is dns.upstreams "[ 127.0.0.1#5053 ]"
+        wait_for 60 pihole_ready || true
+        expect "после исправления цепочка через Pi-hole работает" eq "$(resolve client vpn.example 192.168.3.2)" 203.0.113.20
     fi
 
     log_info "Маршрутизация"

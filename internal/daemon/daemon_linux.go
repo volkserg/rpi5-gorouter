@@ -16,11 +16,13 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
 	sddaemon "github.com/coreos/go-systemd/v22/daemon"
 	"github.com/google/nftables"
+	"github.com/miekg/dns"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
@@ -30,7 +32,9 @@ import (
 	"github.com/volkserg/rpi5-gorouter/internal/domain"
 	"github.com/volkserg/rpi5-gorouter/internal/firewall"
 	"github.com/volkserg/rpi5-gorouter/internal/lists"
+	"github.com/volkserg/rpi5-gorouter/internal/pihole"
 	"github.com/volkserg/rpi5-gorouter/internal/routing"
+	"github.com/volkserg/rpi5-gorouter/internal/services"
 	"github.com/volkserg/rpi5-gorouter/internal/sysctl"
 	"github.com/volkserg/rpi5-gorouter/internal/sysinfo"
 )
@@ -45,6 +49,8 @@ type Options struct {
 	// StateDir — каталог состояния (аренды DHCP).
 	StateDir string
 	Log      *slog.Logger
+	// Services — systemd по D-Bus (перезапуск Pi-hole при правке его конфига).
+	Services func(context.Context) (services.Manager, error)
 }
 
 type daemon struct {
@@ -60,6 +66,8 @@ type daemon struct {
 	zone      *dhcp.Zone
 	dhcpSrv   *dhcp.Server
 	dhcpIface string
+
+	piholeMu sync.Mutex
 
 	// Состояние после последнего успешного apply.
 	cfg     *config.Config
@@ -200,6 +208,9 @@ func (d *daemon) apply() error {
 	if err := d.syncDNS(cfg, entries, overrides, recreated); err != nil {
 		return err
 	}
+	// В фоне: остановка FTL может длиться десятки секунд и не должна
+	// задерживать готовность routerd (иначе systemd убьёт его по таймауту старта).
+	go d.syncPihole(cfg)
 	d.cfg, d.spec, d.healthy, d.tunUp = cfg, spec, healthy, tunUp
 	d.summary = fmt.Sprintf("доменов %d, IP/подсетей %d, DNS-override %d, режим %s",
 		domains, len(static), len(overrides), cfg.VPNMode)
@@ -407,6 +418,89 @@ func (d *daemon) syncDHCP(cfg *config.Config) error {
 	}
 	d.dhcpSrv, d.dhcpIface = srv, cfg.Iface
 	return nil
+}
+
+// syncPihole сверяет в pihole.toml ключи цепочки DNS и при расхождении
+// правит их при остановленном FTL. Ошибки не фатальны: DNS работает и с
+// неидеальным Pi-hole, а причина видна в журнале. Запуски сериализованы.
+func (d *daemon) syncPihole(cfg *config.Config) {
+	d.piholeMu.Lock()
+	defer d.piholeMu.Unlock()
+	if !cfg.PiholeManage || !cfg.DNSUpstream.Addr().IsLoopback() || d.Services == nil {
+		return
+	}
+	if _, err := os.Stat(cfg.PiholeTOML); err != nil {
+		return // Pi-hole не установлен
+	}
+	want := pihole.Desired{
+		Port:      int(cfg.DNSUpstream.Port()),
+		Upstreams: []string{fmt.Sprintf("%s#%d", cfg.DNSCryptAddr.Addr(), cfg.DNSCryptAddr.Port())},
+		ECS:       cfg.DNSECS,
+		LAN:       cfg.LANSubnet,
+	}
+	if cfg.DHCPEnabled {
+		// Pi-hole спрашивает имена клиентов LAN у routerd (имена из DHCP-аренд).
+		want.RevServer = pihole.RevServerEntry(cfg.LANSubnet,
+			netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), 53), cfg.LocalDomain)
+	}
+	drifts, err := pihole.Check(cfg.PiholeTOML, want)
+	if err != nil {
+		d.Log.Warn("сверка конфига Pi-hole", "ошибка", err)
+		return
+	}
+	if len(drifts) == 0 {
+		return
+	}
+	for _, dr := range drifts {
+		d.Log.Info("правка конфига Pi-hole", "ключ", dr.String())
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	m, err := d.Services(ctx)
+	if err != nil {
+		d.Log.Warn("правка конфига Pi-hole: systemd", "ошибка", err)
+		return
+	}
+	defer m.Close()
+	running := false
+	if st, err := m.States(ctx, services.UnitPihole); err == nil && len(st) > 0 {
+		running = st[0].Running()
+	}
+	// FTL перезаписывает pihole.toml сам — правим только остановленный.
+	// Только что запущенный FTL, пока инициализируется, не реагирует на
+	// SIGTERM (systemd добивает его SIGKILL через минуту), поэтому сначала
+	// ждём, пока он ответит на DNS-запрос.
+	if running {
+		waitDNS(ctx, cfg.DNSUpstream, 30*time.Second)
+		if err := m.Stop(ctx, services.UnitPihole); err != nil {
+			d.Log.Warn("остановка Pi-hole для правки конфига", "ошибка", err)
+			return
+		}
+	}
+	if err := pihole.Apply(cfg.PiholeTOML, drifts); err != nil {
+		d.Log.Error("правка конфига Pi-hole", "ошибка", err)
+	}
+	if running {
+		if err := m.Start(ctx, services.UnitPihole); err != nil {
+			d.Log.Error("запуск Pi-hole после правки конфига", "ошибка", err)
+		}
+	}
+}
+
+// waitDNS ждёт, пока DNS-сервер ответит (любым кодом), но не дольше limit.
+func waitDNS(ctx context.Context, server netip.AddrPort, limit time.Duration) {
+	ctx, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
+	c := &dns.Client{Timeout: time.Second}
+	q := new(dns.Msg)
+	q.SetQuestion("pi.hole.", dns.TypeA)
+	for ctx.Err() == nil {
+		if _, _, err := c.ExchangeContext(ctx, q, server.String()); err == nil {
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 }
 
 // cleanup останавливает DHCP и DNS и убирает правила routerd (как stop в bash-версии).

@@ -2,13 +2,18 @@ package cli
 
 import (
 	"context"
+	"fmt"
+	"net/netip"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/volkserg/rpi5-gorouter/internal/config"
 	"github.com/volkserg/rpi5-gorouter/internal/dhcp"
 	"github.com/volkserg/rpi5-gorouter/internal/lists"
+	"github.com/volkserg/rpi5-gorouter/internal/pihole"
 	"github.com/volkserg/rpi5-gorouter/internal/services"
 	"github.com/volkserg/rpi5-gorouter/internal/sysinfo"
 )
@@ -58,6 +63,57 @@ func cmdRestart(x *ctx, a []string) int {
 		return rc
 	}
 	return cmdStart(x, a)
+}
+
+// dnscryptSocket сверяет адрес dnscrypt-proxy.socket с DNSCRYPT_ADDR —
+// конфиг dnscrypt-proxy ведёт пользователь, routerd его только проверяет.
+func (x *ctx) dnscryptSocket(ctx context.Context, cfg *config.Config) {
+	m, err := x.Services(ctx)
+	if err != nil {
+		return
+	}
+	defer m.Close()
+	want := cfg.DNSCryptAddr.String()
+	addrs, err := m.SocketListen(ctx, services.UnitDNSCryptSocket)
+	switch {
+	case err != nil:
+		x.out("  dnscrypt-proxy.socket: %s?%s %v", x.c.Yellow, x.c.NC, err)
+	case slices.Contains(addrs, want):
+		x.out("  dnscrypt-proxy.socket: %s✓%s %s", x.c.Green, x.c.NC, want)
+	default:
+		x.out("  dnscrypt-proxy.socket: %s✗%s слушает %v, ожидается %s (DNSCRYPT_ADDR)", x.c.Red, x.c.NC, addrs, want)
+	}
+}
+
+// piholeConfig показывает, в порядке ли ключи цепочки в pihole.toml.
+func (x *ctx) piholeConfig(cfg *config.Config) {
+	if !cfg.PiholeManage {
+		return
+	}
+	if _, err := os.Stat(cfg.PiholeTOML); err != nil {
+		return
+	}
+	want := pihole.Desired{
+		Port:      int(cfg.DNSUpstream.Port()),
+		Upstreams: []string{fmt.Sprintf("%s#%d", cfg.DNSCryptAddr.Addr(), cfg.DNSCryptAddr.Port())},
+		ECS:       cfg.DNSECS,
+		LAN:       cfg.LANSubnet,
+	}
+	if cfg.DHCPEnabled {
+		want.RevServer = pihole.RevServerEntry(cfg.LANSubnet, netip.MustParseAddrPort("127.0.0.1:53"), cfg.LocalDomain)
+	}
+	drifts, err := pihole.Check(cfg.PiholeTOML, want)
+	switch {
+	case err != nil:
+		x.out("  pihole.toml: %s?%s %v", x.c.Yellow, x.c.NC, err)
+	case len(drifts) == 0:
+		x.out("  pihole.toml: %s✓%s ключи цепочки в порядке", x.c.Green, x.c.NC)
+	default:
+		x.out("  pihole.toml: %s✗%s расхождения (routerd исправит при reload):", x.c.Red, x.c.NC)
+		for _, d := range drifts {
+			x.out("    %s", d)
+		}
+	}
 }
 
 // logUnits — юниты, чьи журналы показывает logs.
@@ -128,6 +184,10 @@ func cmdStatus(x *ctx, _ []string) int {
 	x.out("  :53    routerd        %s", listen(true, true, 53))
 	x.out("  :5353  Pi-hole        %s", listen(true, true, 5353))
 	x.out("  :5053  dnscrypt-proxy %s", listen(true, true, 5053))
+	if cfg, _, err := config.Load(x.routerConf()); err == nil {
+		x.dnscryptSocket(ctx, cfg)
+		x.piholeConfig(cfg)
+	}
 	x.out("")
 
 	x.out("%sVPN:%s", x.c.Yellow, x.c.NC)

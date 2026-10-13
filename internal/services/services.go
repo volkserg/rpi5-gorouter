@@ -47,6 +47,8 @@ type Manager interface {
 	Enabled(ctx context.Context, unit string) (bool, error)
 	// StatusText — текст STATUS= службы (sd_notify), пусто если не задан.
 	StatusText(ctx context.Context, unit string) (string, error)
+	// SocketListen — адреса, которые слушает socket-юнит (127.0.0.1:5053).
+	SocketListen(ctx context.Context, unit string) ([]string, error)
 	Close()
 }
 

@@ -6,7 +6,9 @@ module github.com/volkserg/rpi5-gorouter
 go 1.25.0
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/coreos/go-systemd/v22 v22.7.0
+	github.com/godbus/dbus/v5 v5.1.0
 	github.com/google/nftables v0.3.0
 	github.com/insomniacslk/dhcp v0.0.0-20260901064844-234b97448fae
 	github.com/miekg/dns v1.1.73
@@ -16,7 +18,6 @@ require (
 )
 
 require (
-	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/google/go-cmp v0.6.0 // indirect
 	github.com/josharian/native v1.1.0 // indirect
 	github.com/mdlayher/netlink v1.7.3-0.20250113171957-fbb4dce95f42 // indirect

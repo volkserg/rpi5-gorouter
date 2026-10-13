@@ -65,13 +65,6 @@ func TestUnknownCommand(t *testing.T) {
 	}
 }
 
-func TestNotYetPorted(t *testing.T) {
-	_, errOut, code := run(t, t.TempDir(), "apply-network")
-	if code != 1 || !strings.Contains(errOut, "ещё не перенесена") {
-		t.Errorf("code=%d stderr=%q", code, errOut)
-	}
-}
-
 func TestInfo(t *testing.T) {
 	dir := writeFiles(t, map[string]string{
 		"router.conf":      "LAN_SUBNET=10.0.0.0/23\nROUTER_IP=10.0.0.1\nRPI5_IP=10.0.0.2\nLAN_POOL_START=10.0.1.10\nLAN_POOL_END=10.0.1.200\n",

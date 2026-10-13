@@ -165,7 +165,8 @@ func TestRouterdKeys(t *testing.T) {
 	if cfg.VPNMode != ModeRedirect || cfg.VPNPort != 1080 || !cfg.QUICReject ||
 		cfg.VPNDynamicTimeout != 24*time.Hour || cfg.DNSUpstream.String() != "127.0.0.1:5353" ||
 		cfg.FilterAAAA != FilterAAAAVPN || !cfg.DNSECS ||
-		!cfg.DHCPEnabled || cfg.DHCPLeaseTime != 24*time.Hour || cfg.LocalDomain != "lan" {
+		!cfg.DHCPEnabled || cfg.DHCPLeaseTime != 24*time.Hour || cfg.LocalDomain != "lan" ||
+		!cfg.PiholeManage || cfg.PiholeTOML != "/etc/pihole/pihole.toml" || cfg.DNSCryptAddr.String() != "127.0.0.1:5053" {
 		t.Errorf("дефолты: %+v", cfg)
 	}
 	cfg, err = FromValues(map[string]string{"VPN_PORT": "12345", "QUIC_REJECT": "no",
@@ -186,6 +187,7 @@ func TestRouterdKeys(t *testing.T) {
 		"FILTER_AAAA=some":   {"FILTER_AAAA": "some"},
 		"DNS_ECS=maybe":      {"DNS_ECS": "maybe"},
 		"аренда 10s":         {"DHCP_LEASE_TIME": "10s"},
+		"PIHOLE_TOML отн.":   {"PIHOLE_TOML": "pihole.toml"},
 		"домен с пробелом":   {"LOCAL_DOMAIN": "my lan"},
 		"VPN_TUN со слэшем":  {"VPN_TUN": "tun/0"},
 		"порт 0":             {"VPN_PORT": "0"},

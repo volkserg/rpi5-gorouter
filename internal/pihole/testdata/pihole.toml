@@ -1,0 +1,29 @@
+# Pi-hole configuration file (v6.7.1)
+# Encoding: UTF-8
+# This file is managed by pihole-FTL
+
+[dns]
+  # Array of upstream DNS servers used by Pi-hole
+  upstreams = [
+    "8.8.8.8",
+    "8.8.4.4"
+  ] ### CHANGED, default = []
+
+  # Should FTL use EDNS0 client subnet (ECS) information?
+  EDNS0ECS = false ### CHANGED, default = true
+
+  listeningMode = "ALL" ### CHANGED, default = "LOCAL"
+
+  # Port used by the DNS server
+  port = 53
+
+  revServers = [
+    "true,10.20.0.0/16,10.20.0.53,corp.example"
+  ] ### CHANGED, default = []
+
+  [dns.domain]
+    # The DNS domain used by your Pi-hole.
+    name = "lan"
+
+[webserver]
+  port = "80o,443os,[::]:80o,[::]:443os"

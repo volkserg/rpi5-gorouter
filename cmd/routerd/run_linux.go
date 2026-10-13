@@ -28,6 +28,7 @@ func runDaemon() int {
 		ProcRoot:  env.ProcRoot,
 		StateDir:  env.StateDir,
 		Log:       log,
+		Services:  env.Services,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "routerd: %v\n", err)
