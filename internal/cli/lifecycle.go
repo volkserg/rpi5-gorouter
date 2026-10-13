@@ -86,13 +86,18 @@ func cmdStatus(x *ctx, _ []string) int {
 		x.out("  %s?%s systemd недоступен: %v", x.c.Yellow, x.c.NC, err)
 	} else {
 		sts, err := m.States(ctx, services.StatusUnits...)
-		m.Close()
 		if err != nil {
 			x.out("  %s?%s ошибка запроса состояния: %v", x.c.Yellow, x.c.NC, err)
 		}
 		for _, st := range sts {
 			x.unitLine(st)
+			if st.Name == services.UnitRouterd && st.Running() {
+				if text, err := m.StatusText(ctx, st.Name); err == nil && text != "" {
+					x.out("      %s", text)
+				}
+			}
 		}
+		m.Close()
 	}
 	x.out("")
 

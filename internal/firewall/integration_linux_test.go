@@ -59,6 +59,7 @@ func spec(static ...string) Spec {
 		RedirectPort:   1080,
 		QUICReject:     true,
 		DynamicTimeout: 24 * time.Hour,
+		Mode:           ModeRedirect,
 	}
 	for _, p := range static {
 		s.Static = append(s.Static, netip.MustParsePrefix(p))
@@ -161,5 +162,66 @@ func TestRemove(t *testing.T) {
 	}
 	if out := run("nft", "list", "tables"); strings.Contains(out, TableName) {
 		t.Errorf("таблица осталась:\n%s", out)
+	}
+}
+
+func TestApplyTProxyMode(t *testing.T) {
+	c, run := testNS(t)
+	s := spec("10.20.0.0/16")
+	s.Mode = ModeTProxy
+	if _, err := Apply(c, s); err != nil {
+		t.Fatal(err)
+	}
+	out := run("nft", "list", "chain", "ip", TableName, chainMangle)
+	mustContain(t, out,
+		"type filter hook prerouting priority mangle",
+		"meta l4proto tcp socket transparent 1 meta mark set 0x00000052 accept",
+		`iifname "eth0" udp dport 443 return`,
+		`iifname "eth0" meta l4proto tcp ip daddr @vpn_static counter`,
+		`iifname "eth0" meta l4proto udp ip daddr @vpn_dynamic counter`,
+		"tproxy to :1080 meta mark set 0x00000052 accept",
+		// Запасное правило без tproxy: туннель упал — пакет не уходит напрямую.
+		`iifname "eth0" meta l4proto tcp ip daddr @vpn_static meta mark set 0x00000052`,
+	)
+	if out := run("nft", "list", "chain", "ip", TableName, chainPrerouting); strings.Contains(out, "redirect") {
+		t.Errorf("в режиме tproxy redirect не нужен:\n%s", out)
+	}
+}
+
+func TestApplyRouteMode(t *testing.T) {
+	c, run := testNS(t)
+	s := spec("10.20.0.0/16")
+	s.Mode, s.Tun = ModeRoute, "tun0"
+	if _, err := Apply(c, s); err != nil {
+		t.Fatal(err)
+	}
+	out := run("nft", "list", "table", "ip", TableName)
+	mustContain(t, out,
+		`iifname "eth0" ct state new ip daddr @vpn_static counter`, "ct mark set 0x00000052",
+		`iifname "eth0" ct mark 0x00000052 meta mark set 0x00000052`,
+		`oifname "tun0" tcp flags syn tcp option maxseg size set rt mtu`,
+		`udp dport 443 ip daddr @vpn_dynamic counter`,
+	)
+	if strings.Contains(out, "redirect") || strings.Contains(out, "tproxy") {
+		t.Errorf("в режиме route нет redirect/tproxy:\n%s", out)
+	}
+}
+
+func TestBypass(t *testing.T) {
+	c, run := testNS(t)
+	for _, mode := range []Mode{ModeRedirect, ModeTProxy, ModeRoute} {
+		s := spec("10.20.0.0/16")
+		s.Mode, s.Tun, s.Bypass = mode, "tun0", true
+		if _, err := Apply(c, s); err != nil {
+			t.Fatal(mode, err)
+		}
+		out := run("nft", "list", "table", "ip", TableName)
+		for _, banned := range []string{"redirect", "tproxy", "ct mark set"} {
+			if strings.Contains(out, banned) {
+				t.Errorf("%s, перехват снят, но есть %q:\n%s", mode, banned, out)
+			}
+		}
+		// NAT, set'ы и QUIC-reject остаются.
+		mustContain(t, out, "masquerade", "10.20.0.0/16", "reject")
 	}
 }

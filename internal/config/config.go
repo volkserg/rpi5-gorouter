@@ -45,6 +45,11 @@ type Config struct {
 
 	// VPNMode — способ отправки трафика к адресам из списков в туннель.
 	VPNMode string
+	// VPNFailoverOpen — при недоступном туннеле снимать перехват (трафик идёт
+	// напрямую); false — «закрываться»: адреса из списков недоступны.
+	VPNFailoverOpen bool
+	// VPNTun — интерфейс туннеля для режима route.
+	VPNTun string
 	// VPNPort — порт локального слушателя туннеля (GOST).
 	VPNPort uint16
 	// QUICReject — отклонять UDP/443 к адресам из списков.
@@ -70,6 +75,8 @@ var defaults = map[string]string{
 
 	// Ключи routerd (в bash-версии были зашиты в скрипты).
 	"VPN_MODE":            ModeRedirect,
+	"VPN_FAILOVER":        "closed",
+	"VPN_TUN":             "tun0",
 	"VPN_PORT":            "1080",
 	"QUIC_REJECT":         "yes",
 	"VPN_DYNAMIC_TIMEOUT": "24h",
@@ -149,12 +156,20 @@ func FromValues(values map[string]string) (*Config, error) {
 		}
 	}
 	switch m := get("VPN_MODE"); m {
-	case ModeRedirect:
+	case ModeRedirect, ModeTProxy, ModeRoute:
 		cfg.VPNMode = m
-	case ModeTProxy, ModeRoute:
-		errs = append(errs, fmt.Errorf("VPN_MODE=%s: режим ещё не реализован, доступен %s", m, ModeRedirect))
 	default:
 		errs = append(errs, fmt.Errorf("VPN_MODE=%q: ожидается %s, %s или %s", m, ModeRedirect, ModeTProxy, ModeRoute))
+	}
+	switch f := get("VPN_FAILOVER"); f {
+	case "closed", "open":
+		cfg.VPNFailoverOpen = f == "open"
+	default:
+		errs = append(errs, fmt.Errorf("VPN_FAILOVER=%q: ожидается closed или open", f))
+	}
+	cfg.VPNTun = get("VPN_TUN")
+	if err := validIfaceName(cfg.VPNTun); err != nil {
+		errs = append(errs, fmt.Errorf("VPN_TUN=%q: %v", cfg.VPNTun, err))
 	}
 	if v, err := strconv.ParseUint(get("VPN_PORT"), 10, 16); err != nil || v == 0 {
 		errs = append(errs, fmt.Errorf("VPN_PORT=%q: ожидается порт 1–65535", get("VPN_PORT")))

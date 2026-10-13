@@ -81,6 +81,15 @@ func (m *dbusManager) Disable(ctx context.Context, unit string) error {
 	return m.c.ReloadContext(ctx)
 }
 
+func (m *dbusManager) StatusText(ctx context.Context, unit string) (string, error) {
+	p, err := m.c.GetUnitTypePropertyContext(ctx, unit, "Service", "StatusText")
+	if err != nil {
+		return "", err
+	}
+	s, _ := p.Value.Value().(string)
+	return s, nil
+}
+
 func (m *dbusManager) Enabled(ctx context.Context, unit string) (bool, error) {
 	p, err := m.c.GetUnitPropertyContext(ctx, unit, "UnitFileState")
 	if err != nil {

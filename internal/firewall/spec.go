@@ -1,5 +1,5 @@
-// Package firewall — правила nftables routerd: NAT, перенаправление трафика
-// к адресам из списков на локальный слушатель туннеля, отклонение QUIC.
+// Package firewall — правила nftables routerd: NAT, отправка трафика к адресам
+// из списков в туннель (redirect / tproxy / route), отклонение QUIC.
 // Работает через netlink (google/nftables), без вызова nft/iptables/ipset.
 //
 // Всё живёт в собственной таблице `ip router_service`; чужие таблицы
@@ -22,6 +22,25 @@ const (
 	chainPrerouting = "prerouting_nat"
 	chainPostroute  = "postrouting_nat"
 	chainForward    = "forward_filter"
+	chainMangle     = "prerouting_mangle"
+
+	// Mark — fwmark пакетов, идущих в туннель (режимы tproxy и route);
+	// по нему policy routing выбирает таблицу RouteTable.
+	Mark = 0x52
+	// RouteTable — таблица маршрутизации routerd.
+	RouteTable = 152
+)
+
+// Mode — способ отправки трафика к адресам из списков в туннель.
+type Mode string
+
+const (
+	// ModeRedirect — nat REDIRECT TCP на локальный слушатель (GOST red://).
+	ModeRedirect Mode = "redirect"
+	// ModeTProxy — TPROXY TCP и UDP на локальный слушатель (GOST red/redu с tproxy).
+	ModeTProxy Mode = "tproxy"
+	// ModeRoute — пометка и policy routing в интерфейс туннеля (L3, GOST tun://).
+	ModeRoute Mode = "route"
 )
 
 // Spec — желаемое состояние правил.
@@ -34,6 +53,13 @@ type Spec struct {
 	DynamicTimeout time.Duration
 	// Static — IP/подсети из vpn_domains.txt.
 	Static []netip.Prefix
+
+	Mode Mode
+	// Tun — интерфейс туннеля для ModeRoute.
+	Tun string
+	// Bypass — перехват снят: туннель недоступен при VPN_FAILOVER=open,
+	// трафик к адресам из списков идёт напрямую. Set'ы и NAT остаются.
+	Bypass bool
 }
 
 // Validate проверяет Spec до обращения к ядру.
@@ -47,6 +73,15 @@ func (s Spec) Validate() error {
 	}
 	if s.RedirectPort == 0 {
 		errs = append(errs, errors.New("порт перенаправления не задан"))
+	}
+	switch s.Mode {
+	case ModeRedirect, ModeTProxy:
+	case ModeRoute:
+		if s.Tun == "" || len(s.Tun) > 15 {
+			errs = append(errs, fmt.Errorf("недопустимое имя интерфейса туннеля %q", s.Tun))
+		}
+	default:
+		errs = append(errs, fmt.Errorf("неизвестный режим %q", s.Mode))
 	}
 	if s.DynamicTimeout < time.Second {
 		errs = append(errs, fmt.Errorf("слишком короткий таймаут vpn_dynamic: %v", s.DynamicTimeout))

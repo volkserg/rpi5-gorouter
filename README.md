@@ -5,10 +5,11 @@
 и подсетям через VPN-туннель (например, к корпоративной сети) на одном порту `eth0`.
 Замена bash-версии без вызова внешних утилит в рабочем режиме.
 
-Статус: **этап 2** — демон `routerd run`: sysctl и правила nftables через netlink
-(режим `redirect`), DNS-фильтр на dnsmasq с `nftset=` (временно, до DNS-прокси
-routerd), перечитывание конфигов по SIGHUP; все команды `router_service_ctl`,
-кроме `apply-network`.
+Статус: **этап 2a** — демон `routerd run`: sysctl, правила nftables и policy
+routing через netlink, три режима отправки трафика в туннель (`redirect`,
+`tproxy`, `route`) и поведение при недоступном туннеле (`VPN_FAILOVER`);
+DNS-фильтр на dnsmasq с `nftset=` (временно, до DNS-прокси routerd);
+все команды `router_service_ctl`, кроме `apply-network`.
 Архитектура, решения и план — в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Сборка
@@ -46,7 +47,9 @@ orb -m routerd-lab sudo ./testbed/lab.sh bootstrap      # один раз
 orb -m routerd-lab sudo ./testbed/lab.sh check-kernel   # ядро VM против эталона RPi
 orb -m routerd-lab sudo ./testbed/lab.sh up
 orb -m routerd-lab sudo ./testbed/lab.sh install
-orb -m routerd-lab sudo ./testbed/lab.sh test
+orb -m routerd-lab sudo ./testbed/lab.sh test       # текущий режим
+orb -m routerd-lab sudo ./testbed/lab.sh test-all   # redirect, tproxy, route × closed/open
+orb -m routerd-lab sudo ./testbed/lab.sh mode tproxy open
 ```
 
 Интеграционные тесты nftables (root, в отдельном netns):

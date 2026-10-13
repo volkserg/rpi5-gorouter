@@ -66,12 +66,13 @@ func TestStatus(t *testing.T) {
 
 	f := servicestest.New(services.UnitRouterd, services.UnitPihole)
 	f.SetActive(services.UnitRouterd)
+	f.Status[services.UnitRouterd] = "работает: режим tproxy, туннель доступен"
 	out, _, code := runFake(dir, f, "status")
 	if code != 0 {
 		t.Fatal(code)
 	}
 	for _, want := range []string{
-		"● routerd — запущен", "○ pihole-FTL — остановлен", "? gost-run — не установлен",
+		"● routerd — запущен", "      работает: режим tproxy, туннель доступен", "○ pihole-FTL — остановлен", "? gost-run — не установлен",
 		"IP forwarding: 1",
 		":53    routerd        ● слушается",
 		":5353  Pi-hole        ○ не слушается",

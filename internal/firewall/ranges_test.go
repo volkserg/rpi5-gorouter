@@ -48,13 +48,19 @@ func TestMergePrefixes(t *testing.T) {
 }
 
 func TestSpecValidate(t *testing.T) {
-	ok := Spec{Iface: "eth0", LAN: netip.MustParsePrefix("192.168.3.0/24"), RedirectPort: 1080, DynamicTimeout: 24 * time.Hour}
+	ok := Spec{Iface: "eth0", LAN: netip.MustParsePrefix("192.168.3.0/24"), RedirectPort: 1080,
+		DynamicTimeout: 24 * time.Hour, Mode: ModeRedirect}
 	if err := ok.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	bad := ok
-	bad.Iface, bad.RedirectPort, bad.DynamicTimeout = "averyveryverylongname", 0, 0
-	if err := bad.Validate(); err == nil || strings.Count(err.Error(), "\n") != 2 {
-		t.Errorf("ожидались три ошибки: %v", err)
+	bad.Iface, bad.RedirectPort, bad.DynamicTimeout, bad.Mode = "averyveryverylongname", 0, 0, "magic"
+	if err := bad.Validate(); err == nil || strings.Count(err.Error(), "\n") != 3 {
+		t.Errorf("ожидались четыре ошибки: %v", err)
+	}
+	route := ok
+	route.Mode = ModeRoute
+	if err := route.Validate(); err == nil {
+		t.Error("route без интерфейса туннеля — ошибка")
 	}
 }

@@ -105,33 +105,79 @@ func build(c *nftables.Conn, s Spec) {
 
 	pre := c.AddChain(&nftables.Chain{Name: chainPrerouting, Table: t, Type: nftables.ChainTypeNAT,
 		Hooknum: nftables.ChainHookPrerouting, Priority: nftables.ChainPriorityNATDest})
+	mangle := c.AddChain(&nftables.Chain{Name: chainMangle, Table: t, Type: nftables.ChainTypeFilter,
+		Hooknum: nftables.ChainHookPrerouting, Priority: nftables.ChainPriorityMangle})
 	post := c.AddChain(&nftables.Chain{Name: chainPostroute, Table: t, Type: nftables.ChainTypeNAT,
 		Hooknum: nftables.ChainHookPostrouting, Priority: nftables.ChainPriorityNATSource})
 	policy := nftables.ChainPolicyAccept
 	fwd := c.AddChain(&nftables.Chain{Name: chainForward, Table: t, Type: nftables.ChainTypeFilter,
 		Hooknum: nftables.ChainHookForward, Priority: nftables.ChainPriorityFilter, Policy: &policy})
-	for _, ch := range []*nftables.Chain{pre, post, fwd} {
+	for _, ch := range []*nftables.Chain{pre, mangle, post, fwd} {
 		c.FlushChain(ch)
 	}
-
-	for _, set := range []*nftables.Set{static, dynamic} {
-		// TCP с LAN к адресам из списков → локальный слушатель туннеля.
-		c.AddRule(&nftables.Rule{Table: t, Chain: pre, Exprs: concat(
-			ifaceIn(s.Iface), l4proto(unix.IPPROTO_TCP), daddrIn(set),
-			counter(), redirectTo(s.RedirectPort))})
+	rule := func(ch *nftables.Chain, parts ...[]expr.Any) {
+		c.AddRule(&nftables.Rule{Table: t, Chain: ch, Exprs: concat(parts...)})
 	}
-	// NAT для клиентов LAN наружу (тот же интерфейс — у RPi один порт).
-	c.AddRule(&nftables.Rule{Table: t, Chain: post, Exprs: concat(
-		addrInPrefix(offSaddr, s.LAN, true), addrInPrefix(offDaddr, s.LAN, false),
-		counter(), []expr.Any{&expr.Masq{}})})
-	if s.QUICReject {
-		for _, set := range []*nftables.Set{static, dynamic} {
-			// QUIC к адресам из списков отклоняется: браузер сразу уходит на TCP,
-			// который идёт через туннель.
-			c.AddRule(&nftables.Rule{Table: t, Chain: fwd, Exprs: concat(
-				ifaceIn(s.Iface), l4proto(unix.IPPROTO_UDP), dport(443), daddrIn(set),
-				counter(), rejectPortUnreachable())})
+	sets := []*nftables.Set{static, dynamic}
+
+	if !s.Bypass {
+		switch s.Mode {
+		case ModeRedirect:
+			// TCP с LAN к адресам из списков → локальный слушатель туннеля.
+			for _, set := range sets {
+				rule(pre, ifaceIn(s.Iface), l4proto(unix.IPPROTO_TCP), daddrIn(set),
+					counter(), redirectTo(s.RedirectPort))
+			}
+		case ModeTProxy:
+			// Пакеты уже перехваченных соединений (сокет слушателя прозрачный).
+			rule(mangle, l4proto(unix.IPPROTO_TCP), socketTransparent(), setMark(Mark), verdict(expr.VerdictAccept))
+			if s.QUICReject {
+				// QUIC не перехватываем — его отклонит forward-цепочка ниже.
+				rule(mangle, ifaceIn(s.Iface), l4proto(unix.IPPROTO_UDP), dport(443), verdict(expr.VerdictReturn))
+			}
+			for _, set := range sets {
+				for _, proto := range []byte{unix.IPPROTO_TCP, unix.IPPROTO_UDP} {
+					rule(mangle, ifaceIn(s.Iface), l4proto(proto), daddrIn(set),
+						counter(), tproxyTo(s.RedirectPort), setMark(Mark), verdict(expr.VerdictAccept))
+				}
+			}
+			// Слушателя нет (туннель упал): tproxy не срабатывает и пакет ушёл бы
+			// напрямую. Помечаем его всё равно — он будет доставлен локально,
+			// где клиент получит RST / port unreachable (VPN_FAILOVER=closed).
+			for _, set := range sets {
+				for _, proto := range []byte{unix.IPPROTO_TCP, unix.IPPROTO_UDP} {
+					rule(mangle, ifaceIn(s.Iface), l4proto(proto), daddrIn(set), setMark(Mark))
+				}
+			}
+		case ModeRoute:
+			// Решение принимается на первом пакете соединения и запоминается
+			// в ct mark: истечение записи в vpn_dynamic не рвёт соединение.
+			for _, set := range sets {
+				rule(mangle, ifaceIn(s.Iface), ctStateNew(), daddrIn(set), counter(), setCtMark(Mark))
+			}
+			// Только для пакетов из LAN: ответы из туннеля несут тот же ct mark,
+			// и с fwmark они ушли бы обратно в туннель.
+			rule(mangle, ifaceIn(s.Iface), ctMarkIs(Mark), setMark(Mark))
 		}
+	}
+
+	// NAT для клиентов LAN наружу (тот же интерфейс — у RPi один порт;
+	// в режиме route — и в интерфейс туннеля).
+	rule(post, addrInPrefix(offSaddr, s.LAN, true), addrInPrefix(offDaddr, s.LAN, false),
+		counter(), []expr.Any{&expr.Masq{}})
+
+	if s.QUICReject {
+		// QUIC к адресам из списков отклоняется: браузер сразу уходит на TCP,
+		// который идёт через туннель.
+		for _, set := range sets {
+			rule(fwd, ifaceIn(s.Iface), l4proto(unix.IPPROTO_UDP), dport(443), daddrIn(set),
+				counter(), rejectPortUnreachable())
+		}
+	}
+	if s.Mode == ModeRoute {
+		// MTU туннеля меньше, чем у клиентов: без ограничения MSS большие
+		// TCP-пакеты теряются и соединения «зависают».
+		rule(fwd, ifaceOut(s.Tun), l4proto(unix.IPPROTO_TCP), tcpSyn(), mssClampToPMTU())
 	}
 }
 
@@ -228,6 +274,77 @@ func redirectTo(port uint16) []expr.Any {
 	return []expr.Any{
 		&expr.Immediate{Register: 1, Data: binaryutil.BigEndian.PutUint16(port)},
 		&expr.Redir{RegisterProtoMin: 1},
+	}
+}
+
+func ifaceOut(name string) []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyOIFNAME, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ifname(name)},
+	}
+}
+
+func verdict(k expr.VerdictKind) []expr.Any { return []expr.Any{&expr.Verdict{Kind: k}} }
+
+func setMark(m uint32) []expr.Any {
+	return []expr.Any{
+		&expr.Immediate{Register: 1, Data: binaryutil.NativeEndian.PutUint32(m)},
+		&expr.Meta{Key: expr.MetaKeyMARK, SourceRegister: true, Register: 1},
+	}
+}
+
+func socketTransparent() []expr.Any {
+	return []expr.Any{
+		&expr.Socket{Key: expr.SocketKeyTransparent, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(1)},
+	}
+}
+
+func tproxyTo(port uint16) []expr.Any {
+	return []expr.Any{
+		&expr.Immediate{Register: 1, Data: binaryutil.BigEndian.PutUint16(port)},
+		&expr.TProxy{Family: unix.NFPROTO_IPV4, TableFamily: unix.NFPROTO_IPV4, RegPort: 1},
+	}
+}
+
+func ctStateNew() []expr.Any {
+	return []expr.Any{
+		&expr.Ct{Register: 1, Key: expr.CtKeySTATE},
+		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 4,
+			Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitNEW), Xor: []byte{0, 0, 0, 0}},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{0, 0, 0, 0}},
+	}
+}
+
+func setCtMark(m uint32) []expr.Any {
+	return []expr.Any{
+		&expr.Immediate{Register: 1, Data: binaryutil.NativeEndian.PutUint32(m)},
+		&expr.Ct{Key: expr.CtKeyMARK, SourceRegister: true, Register: 1},
+	}
+}
+
+func ctMarkIs(m uint32) []expr.Any {
+	return []expr.Any{
+		&expr.Ct{Register: 1, Key: expr.CtKeyMARK},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(m)},
+	}
+}
+
+// tcpSyn — tcp flags syn.
+func tcpSyn() []expr.Any {
+	return []expr.Any{
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 13, Len: 1},
+		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 1, Mask: []byte{0x02}, Xor: []byte{0}},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{0}},
+	}
+}
+
+// mssClampToPMTU — tcp option maxseg size set rt mtu.
+func mssClampToPMTU() []expr.Any {
+	return []expr.Any{
+		&expr.Rt{Register: 1, Key: expr.RtTCPMSS},
+		&expr.Byteorder{SourceRegister: 1, DestRegister: 1, Op: expr.ByteorderHton, Len: 2, Size: 2},
+		&expr.Exthdr{SourceRegister: 1, Type: 2, Offset: 2, Len: 2, Op: expr.ExthdrOpTcpopt},
 	}
 }
 

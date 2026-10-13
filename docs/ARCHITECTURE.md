@@ -52,8 +52,9 @@ UDP/443 к VPN-адресам → REJECT icmp port-unreachable (браузер �
 - GOST: конфиг под управлением пользователя, routerd только запускает/проверяет юнит.
   Удалённая сторона может быть цепочкой из нескольких узлов — routerd о ней ничего
   не знает, его зона ответственности заканчивается на локальном слушателе GOST или `tun0`.
-- Новые ключи `router.conf` допустимы, всегда с дефолтами: `VPN_MODE`, `VPN_PORT`,
-  `QUIC_REJECT`, `VPN_DYNAMIC_TIMEOUT` (24h), `DNS_UPSTREAM` (`127.0.0.1#5353`).
+- Новые ключи `router.conf` допустимы, всегда с дефолтами: `VPN_MODE`, `VPN_FAILOVER`,
+  `VPN_PORT`, `VPN_TUN`, `QUIC_REJECT`, `VPN_DYNAMIC_TIMEOUT` (24h),
+  `DNS_UPSTREAM` (`127.0.0.1#5353`).
 - `routerd.service` — `Type=notify-reload`: `reload-vpn-domains` завершается,
   когда routerd применил списки; статус применения — в `StatusText` юнита.
 - Перезагрузка сохраняет адреса в `vpn_dynamic`; если параметры set'ов изменились
@@ -69,6 +70,28 @@ UDP/443 к VPN-адресам → REJECT icmp port-unreachable (браузер �
 
 `tproxy` — целевой режим: TCP завершается на RPi (нет TCP-over-TCP), UDP идёт
 через relay. `route` — полная прозрачность ценой TCP-over-TCP.
+
+Детали реализации:
+
+- метка `0x52`, таблица маршрутизации `152`, `ip rule` с приоритетом 1520;
+- `tproxy`: если слушателя нет, `tproxy` не срабатывает — отдельное правило всё
+  равно помечает пакет, и он доставляется локально (RST / port unreachable),
+  а не уходит напрямую; UDP/443 при `QUIC_REJECT=yes` не перехватывается,
+  его отклоняет forward-цепочка;
+- `route`: решение принимается на первом пакете и хранится в `ct mark`
+  (истечение записи в `vpn_dynamic` не рвёт соединение); метка восстанавливается
+  только для пакетов из LAN — иначе ответы из туннеля ушли бы обратно в него;
+  `unreachable default metric 4096` в таблице 152 — туннель упал, трафик не
+  утекает; MSS clamp по MTU маршрута; `rp_filter=2` на интерфейсе туннеля;
+- доступность туннеля проверяется локально раз в 2 с: слушает ли порт GOST
+  (`redirect`, `tproxy`) или поднят ли интерфейс (`route`). Связь GOST с
+  удалённым узлом routerd не проверяет;
+- `VPN_FAILOVER=open`: туннель недоступен — правила перехвата и `ip rule`
+  снимаются (set'ы, NAT и QUIC-reject остаются), вернулся — восстанавливаются.
+  Состояние видно в `router_service_ctl status` (StatusText routerd).
+
+GOST-клиенту в режимах `tproxy` и `route` нужен `CAP_NET_ADMIN`
+(`IP_TRANSPARENT`, создание tun): юнит GOST ведёт пользователь.
 
 | Ключ | Значения | По умолчанию |
 |---|---|---|
@@ -104,7 +127,9 @@ internal/sysinfo/     /proc: слушающие порты, sysctl (для statu
 internal/firewall/    nftables через netlink: таблица router_service, set'ы, правила (Linux)
 internal/sysctl/      запись /proc/sys (ip_forward, redirects — в т.ч. для интерфейса)
 internal/dnsmasq/     конфиг временного DNS-фильтра (nftset=, server=) — до этапа 3
-internal/daemon/      routerd run: применение, sd_notify (notify-reload), SIGHUP, очистка
+internal/routing/     policy routing через netlink: ip rule, таблица 152 (Linux)
+internal/daemon/      routerd run: применение, sd_notify (notify-reload), SIGHUP,
+                      слежение за туннелем, VPN_FAILOVER, очистка
 deploy/systemd/       routerd.service, routerd-dnsmasq.service
 testbed/              стенд: lab.sh, эталон ядра RPi, конфиги стенда
 — далее по этапам —
@@ -129,7 +154,7 @@ Linux-специфичное — под `//go:build linux`, проверяетс
 | 0 | каркас: config, lists, domain, CLI на чтение (`info`, `list-vpn-domains`, `check-config`) | всё |
 | 1 | все команды CLI (кроме apply-network), start/stop/status/logs через D-Bus; правки списков применяются через `ReloadUnit(routerd.service)` (SIGHUP) | init.sh, ipset, dnsmasq, Kea, nmcli |
 | 2 | демон `routerd run`, nftables + sysctl (режим `redirect`), dnsmasq на `nftset=` как юнит `routerd-dnsmasq`; стенд и сквозные проверки | dnsmasq, Kea, nmcli |
-| 2a | режимы `tproxy` и `route`, `VPN_FAILOVER` | dnsmasq, Kea, nmcli |
+| 2a | режимы `tproxy` и `route`, `VPN_FAILOVER`, policy routing (`internal/routing`); стенд — все режимы × closed/open | dnsmasq, Kea, nmcli |
 | 3 | DNS-прокси (сначала теневой режим) | Kea, nmcli |
 | 4 | DHCP | nmcli |
 | 5 | NetworkManager D-Bus, pihole/dnscrypt | — |

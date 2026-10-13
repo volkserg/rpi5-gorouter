@@ -19,7 +19,9 @@
 #   lab.sh check-kernel   сверить ядро VM с эталоном боевой RPi + пробные правила
 #   lab.sh up | down      поднять / снести топологию (down заодно останавливает сервисы)
 #   lab.sh install        поставить routerd (bin/routerd-linux-arm64) и сервисы стенда
-#   lab.sh test           сквозные проверки (после up + install)
+#   lab.sh mode <redirect|tproxy|route> [closed|open]  режим VPN_MODE и VPN_FAILOVER
+#   lab.sh test           сквозные проверки текущего режима (после up + install)
+#   lab.sh test-all       все режимы подряд, каждый с closed и open
 #   lab.sh status         адреса и маршруты во всех namespace
 #   lab.sh exec <ns> cmd  выполнить команду в namespace (rpi, client, router, inet, exit, lan)
 #
@@ -266,6 +268,15 @@ EOF
     nsx exit ip addr add 198.51.100.6/30 dev eth0
     nsx inet ip addr add 198.51.100.5/30 dev x0
     nsx exit ip route add default via 198.51.100.5
+    nsx exit sysctl -qw net.ipv4.ip_forward=1
+    nsx exit nft -f - <<'EOF'
+table ip exit_node {
+    chain post {
+        type nat hook postrouting priority srcnat;
+        ip saddr 192.168.123.0/24 oifname "eth0" masquerade
+    }
+}
+EOF
 
     # RPi: статический адрес, как его выставил бы NetworkManager на бою.
     nsx rpi ip addr add 192.168.3.2/24 dev eth0
@@ -297,7 +308,7 @@ selftest() {
 }
 
 # Юниты стенда: управляемые routerd (имена как на бою) и вспомогательные.
-STAND_UNITS=(gost-run routerd-dnsmasq routerd pihole-FTL lab-dns-corp lab-web-direct lab-web-vpn lab-gost-exit)
+STAND_UNITS=(gost-run routerd-dnsmasq routerd pihole-FTL lab-dns-corp lab-dns-vpn lab-web-direct lab-web-vpn lab-gost-exit)
 
 cmd_down() {
     need_root
@@ -371,6 +382,9 @@ cmd_install() {
     # DNS внутренней зоны corp.test (для dns_override.txt) на 203.0.113.53.
     unit lab-dns-corp inet "/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/dev/null --pid-file= --log-facility=- \
 --listen-address=203.0.113.53 --bind-interfaces --no-resolv --log-queries --address=/corp.test/203.0.113.10"
+    # UDP-сервис на адресе vpn.test: по журналу видно, откуда пришёл UDP.
+    unit lab-dns-vpn inet "/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/dev/null --pid-file= --log-facility=- \
+--listen-address=203.0.113.20 --bind-interfaces --no-resolv --log-queries --address=/udp.test/203.0.113.20"
 
     # Сайты: busybox httpd пишет в журнал адрес клиента каждого запроса.
     mkdir -p "${SRV_DIR}/direct" "${SRV_DIR}/vpn"
@@ -379,12 +393,13 @@ cmd_install() {
     unit lab-web-direct inet "/bin/busybox httpd -f -vv -p 203.0.113.10:80 -h ${SRV_DIR}/direct"
     unit lab-web-vpn inet "/bin/busybox httpd -f -vv -p 203.0.113.20:80 -h ${SRV_DIR}/vpn"
 
-    # Туннель: GOST-клиент на «RPi» (юнит как на бою) и сервер на удалённом узле.
-    unit gost-run rpi "/usr/local/bin/gost -L red://:1080 -F relay+ws://198.51.100.6:8080?path=/tunnel"
-    unit lab-gost-exit exit "/usr/local/bin/gost -L relay+ws://:8080?path=/tunnel"
+    # Удалённый узел: relay с UDP (bind=true) и tun-сервер для режима route.
+    unit lab-gost-exit exit "/usr/local/bin/gost -L relay+ws://:8080?path=/tunnel&bind=true \
+-L tun://:8421?net=192.168.123.1/24&name=tun0"
+    gost_client "$(conf_get VPN_MODE)"
 
     systemctl daemon-reload
-    systemctl restart lab-dns-corp lab-web-direct lab-web-vpn lab-gost-exit
+    systemctl restart lab-dns-corp lab-dns-vpn lab-web-direct lab-web-vpn lab-gost-exit
 
     # Клиент: пока DHCP не перенесён в routerd (этап 4) — статический адрес.
     nsx client ip addr replace 192.168.3.50/24 dev eth0
@@ -394,6 +409,43 @@ cmd_install() {
 
     log_info "Установлено. Запуск стека как на бою: router_service_ctl start"
     ctl start
+}
+
+#===============================================================================
+# mode: переключение VPN_MODE / VPN_FAILOVER
+#===============================================================================
+conf_get() { sed -n "s/^$1=//p" "${CONFIG_DIR}/router.conf" 2>/dev/null || sed -n "s/^$1=//p" "${LAB_DIR}/conf/router.conf"; }
+conf_set() {
+    if grep -q "^$1=" "${CONFIG_DIR}/router.conf"; then
+        sed -i "s/^$1=.*/$1=$2/" "${CONFIG_DIR}/router.conf"
+    else
+        echo "$1=$2" >>"${CONFIG_DIR}/router.conf"
+    fi
+}
+
+# gost_client <режим> — юнит GOST-клиента на «RPi» под режим routerd.
+gost_client() {
+    local chain="-F relay+ws://198.51.100.6:8080?path=/tunnel" listen
+    case $1 in
+    redirect) listen="-L red://:1080" ;;
+    tproxy) listen="-L red://:1080?tproxy=true -L redu://:1080?ttl=30s" ;;
+    route) listen="-L tun://:0/:8421?net=192.168.123.2/24&name=tun0" ;;
+    *) die "неизвестный режим: $1" ;;
+    esac
+    unit gost-run rpi "/usr/local/bin/gost ${listen} ${chain}"
+}
+
+cmd_mode() {
+    need_root
+    local mode=${1:-} failover=${2:-closed}
+    [[ -n "${mode}" ]] || die "использование: lab.sh mode <redirect|tproxy|route> [closed|open]"
+    gost_client "${mode}"
+    conf_set VPN_MODE "${mode}"
+    conf_set VPN_FAILOVER "${failover}"
+    systemctl daemon-reload
+    systemctl restart gost-run
+    ctl reload-vpn-domains >/dev/null
+    log_info "Режим ${mode}, VPN_FAILOVER=${failover}"
 }
 
 #===============================================================================
@@ -434,10 +486,43 @@ quic_refused() {
     return ${rc}
 }
 table_present() { nsx rpi nft list tables | grep -q router_service; }
+# Откуда пришёл последний UDP-запрос к сервису на адресе vpn.test.
+udp_seen() {
+    nsx client dig +short +time=2 +tries=1 udp.test @203.0.113.20 >/dev/null 2>&1 || true
+    journalctl -u lab-dns-vpn -n 5 --no-pager -o cat | grep 'query\[A\] udp.test' | tail -1 | grep -oE '[0-9]+(\.[0-9]+){3}$'
+}
+# ICMP к vpn.test пришёл в «интернет» со стороны удалённого узла.
+icmp_via_exit() {
+    local cap
+    cap="$(mktemp)"
+    nsx inet timeout 4 tcpdump -i x0 -n -c 1 "icmp[0] = 8 and dst host 203.0.113.20" >"${cap}" 2>/dev/null &
+    sleep 0.5
+    nsx client ping -c 2 -W 1 203.0.113.20 >/dev/null 2>&1 || true
+    wait
+    grep -q "ICMP echo request" "${cap}"
+    local rc=$?
+    rm -f "${cap}"
+    return ${rc}
+}
+# wait_for <секунд> <команда…> — ждать, пока команда не станет успешной.
+wait_for() {
+    local n=$1
+    shift
+    for _ in $(seq "$((n * 2))"); do
+        "$@" >/dev/null 2>&1 && return 0
+        sleep 0.5
+    done
+    return 1
+}
+web_ok() { nsx client curl -fsS --max-time 3 "http://$1/" >/dev/null 2>&1; }
+status_has() { systemctl show routerd -p StatusText | grep -q "$1"; }
 
 cmd_test() {
     need_root
     fails=0
+    local mode
+    mode="$(conf_get VPN_MODE)"
+    log_info "Режим ${mode}"
 
     log_info "DNS"
     expect "vpn.test резолвится через routerd → «Pi-hole»" eq "$(resolve client vpn.test 192.168.3.2)" 203.0.113.20
@@ -454,11 +539,30 @@ cmd_test() {
     fetch direct.test
     expect "direct.test: запрос пришёл с WAN роутера 198.51.100.2 (напрямую)" eq "$(seen_by lab-web-direct)" 198.51.100.2
 
+    log_info "UDP и ICMP"
+    case ${mode} in
+    redirect)
+        expect "UDP к vpn.test идёт напрямую (режим redirect — только TCP)" eq "$(udp_seen)" 198.51.100.2
+        expect "ICMP к vpn.test идёт напрямую" not icmp_via_exit
+        ;;
+    tproxy)
+        expect "UDP к vpn.test идёт через туннель" eq "$(udp_seen)" 198.51.100.6
+        expect "ICMP к vpn.test идёт напрямую (tproxy — TCP и UDP)" not icmp_via_exit
+        ;;
+    route)
+        expect "UDP к vpn.test идёт через туннель" eq "$(udp_seen)" 198.51.100.6
+        expect "ICMP к vpn.test идёт через туннель (L3)" icmp_via_exit
+        ;;
+    esac
+
     log_info "QUIC"
     expect "UDP/443 к vpn.test отклоняется (ICMP port unreachable)" quic_refused 203.0.113.20
     expect "UDP/443 к direct.test не отклоняется" not quic_refused 203.0.113.10
 
     log_info "CLI → SIGHUP → nftables"
+    # Освежаем адрес из DNS: на стенде он живёт VPN_DYNAMIC_TIMEOUT=30s, а
+    # проверяется сохранение при reload, а не срок жизни.
+    resolve client vpn.test 192.168.3.2 >/dev/null
     ctl add-vpn-ip 203.0.113.10 >/dev/null
     expect "add-vpn-ip: 203.0.113.10 в vpn_static" set_has vpn_static 203.0.113.10
     fetch direct.test
@@ -467,6 +571,23 @@ cmd_test() {
     fetch direct.test
     expect "remove-vpn-ip: снова напрямую" eq "$(seen_by lab-web-direct)" 198.51.100.2
     expect "после reload адрес из DNS в vpn_dynamic сохранился" set_has vpn_dynamic 203.0.113.20
+
+    log_info "VPN_FAILOVER"
+    systemctl stop gost-run
+    expect "closed: туннель упал — vpn.test недоступен" wait_for 6 not web_ok vpn.test
+    expect "closed: direct.test работает" web_ok direct.test
+    cmd_mode "${mode}" open >/dev/null
+    systemctl stop gost-run
+    expect "open: туннель упал — перехват снят" wait_for 6 status_has "перехват снят"
+    fetch vpn.test
+    expect "open: vpn.test идёт напрямую" eq "$(seen_by lab-web-vpn)" 198.51.100.2
+    systemctl start gost-run
+    expect "open: туннель вернулся — перехват восстановлен" wait_for 10 not status_has "перехват снят"
+    wait_for 10 web_ok vpn.test || true
+    fetch vpn.test
+    expect "open: vpn.test снова через туннель" eq "$(seen_by lab-web-vpn)" 198.51.100.6
+    cmd_mode "${mode}" closed >/dev/null
+    wait_for 10 web_ok vpn.test || true
 
     log_info "Остановка и запуск"
     ctl stop >/dev/null
@@ -479,13 +600,31 @@ cmd_test() {
     log_info "Все проверки пройдены."
 }
 
+cmd_test_all() {
+    need_root
+    local m failed=()
+    for m in redirect tproxy route; do
+        cmd_mode "${m}" closed
+        wait_for 10 web_ok vpn.test || true
+        (cmd_test) || failed+=("${m}")
+    done
+    cmd_mode redirect closed
+    [[ ${#failed[@]} -eq 0 ]] || die "не пройдены режимы: ${failed[*]}"
+    log_info "Все режимы пройдены."
+}
+
 case "${1:-help}" in
 bootstrap) cmd_bootstrap ;;
 check-kernel) cmd_check_kernel ;;
 up) cmd_up ;;
 down) cmd_down ;;
 install) cmd_install ;;
+mode)
+    shift
+    cmd_mode "$@"
+    ;;
 test) cmd_test ;;
+test-all) cmd_test_all ;;
 status) cmd_status ;;
 exec)
     need_root

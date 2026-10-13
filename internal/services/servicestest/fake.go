@@ -14,6 +14,8 @@ type Fake struct {
 	mu        sync.Mutex
 	Units     map[string]*services.State
 	AutoStart map[string]bool
+	// Status — тексты STATUS= служб.
+	Status map[string]string
 	// Fail — юниты, операции над которыми завершаются ошибкой.
 	Fail  map[string]bool
 	Calls []string // "start routerd.service", …
@@ -21,7 +23,8 @@ type Fake struct {
 
 // New создаёт Fake с установленными (но остановленными) юнитами.
 func New(installed ...string) *Fake {
-	f := &Fake{Units: map[string]*services.State{}, AutoStart: map[string]bool{}, Fail: map[string]bool{}}
+	f := &Fake{Units: map[string]*services.State{}, AutoStart: map[string]bool{}, Fail: map[string]bool{},
+		Status: map[string]string{}}
 	for _, u := range installed {
 		f.Units[u] = &services.State{Name: u, LoadState: "loaded", Active: "inactive", Sub: "dead"}
 	}
@@ -86,6 +89,12 @@ func (f *Fake) Enabled(_ context.Context, u string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.AutoStart[u], nil
+}
+
+func (f *Fake) StatusText(_ context.Context, u string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.Status[u], nil
 }
 
 func (f *Fake) Close() {}

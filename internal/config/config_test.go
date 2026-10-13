@@ -171,12 +171,17 @@ func TestRouterdKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if c2, err := FromValues(map[string]string{"VPN_MODE": "route", "VPN_FAILOVER": "open", "VPN_TUN": "wg1"}); err != nil ||
+		c2.VPNMode != ModeRoute || !c2.VPNFailoverOpen || c2.VPNTun != "wg1" {
+		t.Errorf("route/open/wg1: %+v %v", c2, err)
+	}
 	if cfg.VPNPort != 12345 || cfg.QUICReject || cfg.VPNDynamicTimeout != 30*time.Second || cfg.DNSUpstream.String() != "10.0.0.53:53" {
 		t.Errorf("заданные значения: %+v", cfg)
 	}
 	for name, v := range map[string]map[string]string{
 		"неизвестный режим":  {"VPN_MODE": "magic"},
-		"режим ещё не готов": {"VPN_MODE": "tproxy"},
+		"VPN_FAILOVER=maybe": {"VPN_FAILOVER": "maybe"},
+		"VPN_TUN со слэшем":  {"VPN_TUN": "tun/0"},
 		"порт 0":             {"VPN_PORT": "0"},
 		"QUIC_REJECT=maybe":  {"QUIC_REJECT": "maybe"},
 		"таймаут меньше 1s":  {"VPN_DYNAMIC_TIMEOUT": "500ms"},

@@ -45,6 +45,8 @@ type Manager interface {
 	Disable(ctx context.Context, unit string) error
 	// Enabled сообщает, включён ли автозапуск юнита.
 	Enabled(ctx context.Context, unit string) (bool, error)
+	// StatusText — текст STATUS= службы (sd_notify), пусто если не задан.
+	StatusText(ctx context.Context, unit string) (string, error)
 	Close()
 }
 
