@@ -2,16 +2,31 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/volkserg/rpi5-gorouter/internal/services"
+	"github.com/volkserg/rpi5-gorouter/internal/services/servicestest"
 )
+
+// testEnv — окружение с поддельным systemd; root по умолчанию.
+func testEnv(dir string, fake *servicestest.Fake) (Env, *bytes.Buffer, *bytes.Buffer) {
+	var o, e bytes.Buffer
+	return Env{
+		Stdout: &o, Stderr: &e, ConfigDir: dir,
+		ProcRoot: filepath.Join(dir, "proc"),
+		IsRoot:   func() bool { return true },
+		Services: func(context.Context) (services.Manager, error) { return fake, nil },
+	}, &o, &e
+}
 
 func run(t *testing.T, dir string, args ...string) (stdout, stderr string, code int) {
 	t.Helper()
-	var o, e bytes.Buffer
-	code = Run(Env{Stdout: &o, Stderr: &e, ConfigDir: dir}, args)
+	env, o, e := testEnv(dir, servicestest.New())
+	code = Run(env, args)
 	return o.String(), e.String(), code
 }
 
@@ -51,7 +66,7 @@ func TestUnknownCommand(t *testing.T) {
 }
 
 func TestNotYetPorted(t *testing.T) {
-	_, errOut, code := run(t, t.TempDir(), "start")
+	_, errOut, code := run(t, t.TempDir(), "apply-network")
 	if code != 1 || !strings.Contains(errOut, "ещё не перенесена") {
 		t.Errorf("code=%d stderr=%q", code, errOut)
 	}

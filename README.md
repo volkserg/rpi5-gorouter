@@ -5,7 +5,9 @@
 и подсетям через VPN-туннель (например, к корпоративной сети) на одном порту `eth0`.
 Замена bash-версии без вызова внешних утилит в рабочем режиме.
 
-Статус: **этап 0** — разбор конфигов и списков, CLI только на чтение.
+Статус: **этап 1** — все команды `router_service_ctl` (кроме `apply-network`),
+управление юнитами через D-Bus. Демона (`routerd run`) ещё нет — он появится
+на этапе 2 вместе с nftables.
 Архитектура, решения и план — в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Сборка
@@ -19,10 +21,15 @@ make build-rpi   # bin/routerd-linux-arm64
 
 ```bash
 routerd ctl help
-routerd ctl info
+routerd ctl status
 routerd ctl check-config
-routerd ctl list-vpn-domains
+sudo routerd ctl start
 ```
+
+Порядок запуска: `dnscrypt-proxy.socket` → `dnscrypt-proxy` → `pihole-FTL` →
+`routerd` → `gost-run`. `stop` останавливает `gost-run` и `routerd`; Pi-hole и
+dnscrypt-proxy продолжают работать. `logs` — единственное место, где routerd
+вызывает внешнюю программу (`journalctl`).
 
 Каталог конфигов — `/usr/local/etc/router_service`; для стенда и отладки
 переопределяется переменной `ROUTERD_CONFIG_DIR`.

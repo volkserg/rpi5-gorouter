@@ -3,13 +3,17 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 
 	"github.com/volkserg/rpi5-gorouter/internal/config"
 	"github.com/volkserg/rpi5-gorouter/internal/lists"
+	"github.com/volkserg/rpi5-gorouter/internal/services"
 )
 
 // Env — окружение команды; в тестах подменяется.
@@ -17,6 +21,14 @@ type Env struct {
 	Stdout, Stderr io.Writer
 	ConfigDir      string
 	Color          bool
+	// ProcRoot — корень procfs (/proc).
+	ProcRoot string
+	// IsRoot сообщает, запущена ли команда от root.
+	IsRoot func() bool
+	// Services подключается к systemd.
+	Services func(context.Context) (services.Manager, error)
+	// Journal печатает последние lines строк журнала юнита в w.
+	Journal func(ctx context.Context, w io.Writer, unit string, lines int) error
 }
 
 // DefaultEnv — окружение процесса: каталог конфигов из ROUTERD_CONFIG_DIR
@@ -31,7 +43,19 @@ func DefaultEnv() Env {
 		Stderr:    os.Stderr,
 		ConfigDir: dir,
 		Color:     isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == "",
+		ProcRoot:  "/proc",
+		IsRoot:    func() bool { return os.Geteuid() == 0 },
+		Services:  services.Connect,
+		Journal:   journalctl,
 	}
+}
+
+// journalctl — единственный внешний вызов routerd (согласованное исключение):
+// своего читателя журнала systemd без cgo нет.
+func journalctl(ctx context.Context, w io.Writer, unit string, lines int) error {
+	cmd := exec.CommandContext(ctx, "journalctl", "-u", unit, "--no-pager", "-n", strconv.Itoa(lines))
+	cmd.Stdout, cmd.Stderr = w, w
+	return cmd.Run()
 }
 
 func isTerminal(f *os.File) bool {
@@ -46,23 +70,23 @@ type command struct {
 
 // commands — в порядке вывода справки bash-версии; check-config — новая.
 var commands = []command{
-	{"status", "", "Показать состояние всех компонентов", nil},
+	{"status", "", "Показать состояние всех компонентов", cmdStatus},
 	{"info", "", "Показать информацию о конфигурации и конфигах", cmdInfo},
-	{"start", "", "Запустить все компоненты", nil},
-	{"stop", "", "Остановить все компоненты", nil},
-	{"restart", "", "Перезапустить все компоненты", nil},
+	{"start", "", "Запустить все компоненты", cmdStart},
+	{"stop", "", "Остановить все компоненты", cmdStop},
+	{"restart", "", "Перезапустить все компоненты", cmdRestart},
 	{"apply-network", "", "Применить сеть из router.conf (NetworkManager)", nil},
-	{"logs", "", "Показать логи", nil},
+	{"logs", "", "Показать логи", cmdLogs},
 	{"check-config", "", "Проверить router.conf и списки на ошибки", cmdCheckConfig},
 	{},
-	{"add-vpn-domain", "<domain>", "Добавить домен для VPN", nil},
-	{"remove-vpn-domain", "<domain>", "Удалить домен из VPN", nil},
-	{"add-vpn-ip", "<ip|cidr>", "Добавить IP-адрес или подсеть для VPN", nil},
-	{"remove-vpn-ip", "<ip|cidr>", "Удалить IP-адрес или подсеть из VPN", nil},
+	{"add-vpn-domain", "<domain>", "Добавить домен для VPN", cmdAddDomain},
+	{"remove-vpn-domain", "<domain>", "Удалить домен из VPN", cmdRemoveDomain},
+	{"add-vpn-ip", "<ip|cidr>", "Добавить IP-адрес или подсеть для VPN", cmdAddIP},
+	{"remove-vpn-ip", "<ip|cidr>", "Удалить IP-адрес или подсеть из VPN", cmdRemoveIP},
 	{"list-vpn-domains", "", "Показать список доменов и IP для VPN", cmdListVPN},
-	{"load-vpn-domains", "<file>", "Загрузить домены из файла", nil},
-	{"load-vpn-ips", "<file>", "Загрузить IP/CIDR из файла", nil},
-	{"reload-vpn-domains", "", "Перезагрузить список доменов и IP", nil},
+	{"load-vpn-domains", "<file>", "Загрузить домены из файла", cmdLoadDomains},
+	{"load-vpn-ips", "<file>", "Загрузить IP/CIDR из файла", cmdLoadIPs},
+	{"reload-vpn-domains", "", "Перезагрузить список доменов и IP", cmdReload},
 }
 
 // ctx — состояние одного вызова команды.
@@ -72,6 +96,12 @@ type ctx struct {
 }
 
 func (x *ctx) out(format string, a ...any) { fmt.Fprintf(x.Stdout, format+"\n", a...) }
+func (x *ctx) okf(format string, a ...any) {
+	fmt.Fprintf(x.Stdout, x.c.Green+format+x.c.NC+"\n", a...)
+}
+func (x *ctx) notef(format string, a ...any) {
+	fmt.Fprintf(x.Stdout, x.c.Yellow+format+x.c.NC+"\n", a...)
+}
 func (x *ctx) errf(format string, a ...any) {
 	fmt.Fprintf(x.Stderr, x.c.Red+format+x.c.NC+"\n", a...)
 }

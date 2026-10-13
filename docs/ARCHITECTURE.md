@@ -94,13 +94,14 @@ internal/config/      router.conf
 internal/domain/      нормализация, проверка, суффиксный матчер (семантика dnsmasq)
 internal/lists/       vpn_domains.txt, dns_override.txt; flock + атомарная запись
 internal/cli/         команды router_service_ctl
+internal/services/    systemd по D-Bus, порядок запуска (+ servicestest — подделка для тестов)
+internal/sysinfo/     /proc: слушающие порты, sysctl (для status)
 — далее по этапам —
 internal/firewall/    nftables: сборка ruleset (чистая функция) + применение
 internal/dnsproxy/    DNS-прокси
 internal/dhcp/        аренды (чистая логика) + сервер
 internal/netcfg/      NetworkManager D-Bus / netlink (проверка)
-internal/sysctl/      /proc/sys
-internal/services/    systemd по D-Bus, порядок запуска
+internal/sysctl/      запись /proc/sys
 internal/managed/     pihole.toml, dnscrypt-proxy.toml
 internal/control/     unix-сокет CLI ↔ демон
 internal/daemon/      сборка, sd_notify, SIGHUP
@@ -112,12 +113,14 @@ Linux-специфичное — под `//go:build linux`, проверяетс
 
 ## Этапы
 
-Bash-версия остаётся точкой отката на каждом этапе (юниты отключаются, не удаляются).
+Боевая RPi не трогается, пока Go-версия не проверена на стенде целиком, поэтому
+этапы не обязаны сосуществовать с bash-стеком на одном устройстве. Точка отката
+при переключении боя — юниты bash-версии (отключаются, не удаляются).
 
 | # | routerd берёт на себя | Остаётся старым |
 |---|---|---|
 | 0 | каркас: config, lists, domain, CLI на чтение (`info`, `list-vpn-domains`, `check-config`) | всё |
-| 1 | все команды CLI, start/stop/status/logs через D-Bus | init.sh, ipset, dnsmasq, Kea, nmcli |
+| 1 | все команды CLI (кроме apply-network), start/stop/status/logs через D-Bus; правки списков применяются через `ReloadUnit(routerd.service)` (SIGHUP) | init.sh, ipset, dnsmasq, Kea, nmcli |
 | 2 | nftables + sysctl (режим `redirect`); dnsmasq на `nftset=` как отдельный юнит | dnsmasq, Kea, nmcli |
 | 2a | режимы `tproxy` и `route`, `VPN_FAILOVER` | dnsmasq, Kea, nmcli |
 | 3 | DNS-прокси (сначала теневой режим) | Kea, nmcli |
