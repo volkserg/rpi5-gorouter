@@ -58,7 +58,20 @@ type Config struct {
 	VPNDynamicTimeout time.Duration
 	// DNSUpstream — следующий DNS в цепочке (Pi-hole).
 	DNSUpstream netip.AddrPort
+	// FilterAAAA — для каких доменов отвечать на AAAA пустым ответом:
+	// FilterAAAAVPN (домены из списка), FilterAAAAAll, FilterAAAANone.
+	FilterAAAA string
+	// DNSECS — передавать в DNSUpstream адрес клиента (EDNS Client Subnet /32),
+	// чтобы Pi-hole видел реальных клиентов, а не 127.0.0.1.
+	DNSECS bool
 }
+
+// Значения FILTER_AAAA.
+const (
+	FilterAAAAVPN  = "vpn"
+	FilterAAAAAll  = "all"
+	FilterAAAANone = "none"
+)
 
 // Значения по умолчанию совпадают с дефолтами bash-скриптов
 // (${VAR:-default}): пустое значение тоже заменяется дефолтом.
@@ -81,6 +94,8 @@ var defaults = map[string]string{
 	"QUIC_REJECT":         "yes",
 	"VPN_DYNAMIC_TIMEOUT": "24h",
 	"DNS_UPSTREAM":        "127.0.0.1#5353",
+	"FILTER_AAAA":         FilterAAAAVPN,
+	"DNS_ECS":             "yes",
 }
 
 // Warning — некритичное замечание к конфигу (неизвестный ключ, отсутствующий файл).
@@ -190,6 +205,17 @@ func FromValues(values map[string]string) (*Config, error) {
 		errs = append(errs, fmt.Errorf("DNS_UPSTREAM: %w", err))
 	} else {
 		cfg.DNSUpstream = ap
+	}
+	switch f := get("FILTER_AAAA"); f {
+	case FilterAAAAVPN, FilterAAAAAll, FilterAAAANone:
+		cfg.FilterAAAA = f
+	default:
+		errs = append(errs, fmt.Errorf("FILTER_AAAA=%q: ожидается vpn, all или none", f))
+	}
+	if b, err := parseBool(get("DNS_ECS")); err != nil {
+		errs = append(errs, fmt.Errorf("DNS_ECS: %w", err))
+	} else {
+		cfg.DNSECS = b
 	}
 	if p, err := netip.ParsePrefix(get("LAN_SUBNET")); err != nil || !p.Addr().Is4() {
 		errs = append(errs, fmt.Errorf("LAN_SUBNET=%q: ожидается подсеть IPv4 в виде a.b.c.d/N", get("LAN_SUBNET")))

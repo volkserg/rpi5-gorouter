@@ -54,9 +54,22 @@ UDP/443 к VPN-адресам → REJECT icmp port-unreachable (браузер �
   не знает, его зона ответственности заканчивается на локальном слушателе GOST или `tun0`.
 - Новые ключи `router.conf` допустимы, всегда с дефолтами: `VPN_MODE`, `VPN_FAILOVER`,
   `VPN_PORT`, `VPN_TUN`, `QUIC_REJECT`, `VPN_DYNAMIC_TIMEOUT` (24h),
-  `DNS_UPSTREAM` (`127.0.0.1#5353`).
+  `DNS_UPSTREAM` (`127.0.0.1#5353`), `FILTER_AAAA` (`vpn`), `DNS_ECS` (`yes`).
 - `routerd.service` — `Type=notify-reload`: `reload-vpn-domains` завершается,
   когда routerd применил списки; статус применения — в `StatusText` юнита.
+- DNS-прокси (этап 3): слушает адрес RPi и `127.0.0.1` на :53 (как dnsmasq с
+  `interface=eth0`; `IP_FREEBIND` — можно стартовать до назначения адреса),
+  без кэша, до 300 одновременных запросов к upstream, повтор по TCP при TC,
+  урезание ответа под размер UDP клиента. Домен из списка (и его поддомены,
+  совпадение по имени запроса, как `ipset=` в dnsmasq) — A-записи ответа идут
+  в `vpn_dynamic` со сроком max(минимальный TTL, `VPN_DYNAMIC_TIMEOUT`), до 7 суток;
+  повторный ответ продлевает срок (удалить+добавить в одной транзакции —
+  обновление таймаута на месте умеют не все ядра). `FILTER_AAAA=vpn|all|none`.
+  ECS /32 уходит только в `DNS_UPSTREAM` (Pi-hole), не в override-upstream и не
+  для loopback-клиентов; клиенту ECS и OPT возвращаются только если он сам их
+  прислал. bogus-priv: PTR частных и служебных сетей (RFC 6303, 100.64/10) — NXDOMAIN.
+- `miekg/dns` закреплён на v1.1.72 — последняя версия, совместимая с Go 1.24
+  (v1.1.73 требует 1.25).
 - Перезагрузка сохраняет адреса в `vpn_dynamic`; если параметры set'ов изменились
   (например, таймаут), таблица пересоздаётся — не все ядра обновляют их на месте.
 
@@ -126,14 +139,13 @@ internal/services/    systemd по D-Bus, порядок запуска (+ servi
 internal/sysinfo/     /proc: слушающие порты, sysctl (для status)
 internal/firewall/    nftables через netlink: таблица router_service, set'ы, правила (Linux)
 internal/sysctl/      запись /proc/sys (ip_forward, redirects — в т.ч. для интерфейса)
-internal/dnsmasq/     конфиг временного DNS-фильтра (nftset=, server=) — до этапа 3
+internal/dnsproxy/    DNS-прокси на :53 (miekg/dns): override, nft-set по TTL, ECS, AAAA, bogus-priv
 internal/routing/     policy routing через netlink: ip rule, таблица 152 (Linux)
 internal/daemon/      routerd run: применение, sd_notify (notify-reload), SIGHUP,
                       слежение за туннелем, VPN_FAILOVER, очистка
-deploy/systemd/       routerd.service, routerd-dnsmasq.service
+deploy/systemd/       routerd.service
 testbed/              стенд: lab.sh, эталон ядра RPi, конфиги стенда
 — далее по этапам —
-internal/dnsproxy/    DNS-прокси
 internal/dhcp/        аренды (чистая логика) + сервер
 internal/netcfg/      NetworkManager D-Bus / netlink (проверка)
 internal/managed/     pihole.toml, dnscrypt-proxy.toml
@@ -155,7 +167,7 @@ Linux-специфичное — под `//go:build linux`, проверяетс
 | 1 | все команды CLI (кроме apply-network), start/stop/status/logs через D-Bus; правки списков применяются через `ReloadUnit(routerd.service)` (SIGHUP) | init.sh, ipset, dnsmasq, Kea, nmcli |
 | 2 | демон `routerd run`, nftables + sysctl (режим `redirect`), dnsmasq на `nftset=` как юнит `routerd-dnsmasq`; стенд и сквозные проверки | dnsmasq, Kea, nmcli |
 | 2a | режимы `tproxy` и `route`, `VPN_FAILOVER`, policy routing (`internal/routing`); стенд — все режимы × closed/open | dnsmasq, Kea, nmcli |
-| 3 | DNS-прокси (сначала теневой режим) | Kea, nmcli |
+| 3 | DNS-прокси на Go вместо dnsmasq; `routerd-dnsmasq` и пакет `internal/dnsmasq` удалены. Теневой режим не понадобился — боевая RPi до проверки всего на стенде не трогается | Kea, nmcli |
 | 4 | DHCP | nmcli |
 | 5 | NetworkManager D-Bus, pihole/dnscrypt | — |
 | 6 | install.sh, completions, документация | — |

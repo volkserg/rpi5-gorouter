@@ -163,7 +163,8 @@ func TestRouterdKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.VPNMode != ModeRedirect || cfg.VPNPort != 1080 || !cfg.QUICReject ||
-		cfg.VPNDynamicTimeout != 24*time.Hour || cfg.DNSUpstream.String() != "127.0.0.1:5353" {
+		cfg.VPNDynamicTimeout != 24*time.Hour || cfg.DNSUpstream.String() != "127.0.0.1:5353" ||
+		cfg.FilterAAAA != FilterAAAAVPN || !cfg.DNSECS {
 		t.Errorf("дефолты: %+v", cfg)
 	}
 	cfg, err = FromValues(map[string]string{"VPN_PORT": "12345", "QUIC_REJECT": "no",
@@ -181,6 +182,8 @@ func TestRouterdKeys(t *testing.T) {
 	for name, v := range map[string]map[string]string{
 		"неизвестный режим":  {"VPN_MODE": "magic"},
 		"VPN_FAILOVER=maybe": {"VPN_FAILOVER": "maybe"},
+		"FILTER_AAAA=some":   {"FILTER_AAAA": "some"},
+		"DNS_ECS=maybe":      {"DNS_ECS": "maybe"},
 		"VPN_TUN со слэшем":  {"VPN_TUN": "tun/0"},
 		"порт 0":             {"VPN_PORT": "0"},
 		"QUIC_REJECT=maybe":  {"QUIC_REJECT": "maybe"},

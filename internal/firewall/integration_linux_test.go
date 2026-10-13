@@ -225,3 +225,35 @@ func TestBypass(t *testing.T) {
 		mustContain(t, out, "masquerade", "10.20.0.0/16", "reject")
 	}
 }
+
+func TestDynamicLearn(t *testing.T) {
+	c, run := testNS(t)
+	if _, err := Apply(c, spec()); err != nil {
+		t.Fatal(err)
+	}
+	d := newDynamic(c, 30*time.Second, nil)
+
+	// TTL меньше нижней границы — срок 30s; больше — по TTL.
+	d.Learn([]netip.Addr{netip.MustParseAddr("203.0.113.20")}, 5*time.Second)
+	d.Learn([]netip.Addr{netip.MustParseAddr("203.0.113.21")}, 2*time.Minute)
+	out := run("nft", "list", "set", "ip", TableName, SetDynamic)
+	mustContain(t, out, "203.0.113.20 timeout 30s", "203.0.113.21 timeout 2m")
+
+	// Повторный ответ скоро после первого — без изменений (срок не тронут).
+	d.Learn([]netip.Addr{netip.MustParseAddr("203.0.113.20")}, 5*time.Second)
+
+	// Срок подходит к концу — продлевается, с новым большим TTL.
+	d.now = func() time.Time { return time.Now().Add(20 * time.Second) }
+	d.Learn([]netip.Addr{netip.MustParseAddr("203.0.113.20")}, 10*time.Minute)
+	out = run("nft", "list", "set", "ip", TableName, SetDynamic)
+	mustContain(t, out, "203.0.113.20 timeout 10m")
+
+	// После Reset (таблица пересоздана) адрес добавляется снова.
+	if _, err := Apply(c, spec()); err != nil {
+		t.Fatal(err)
+	}
+	run("nft", "flush", "set", "ip", TableName, SetDynamic)
+	d.Reset()
+	d.Learn([]netip.Addr{netip.MustParseAddr("203.0.113.20")}, time.Minute)
+	mustContain(t, run("nft", "list", "set", "ip", TableName, SetDynamic), "203.0.113.20 timeout 1m")
+}

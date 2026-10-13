@@ -1,20 +1,20 @@
 //go:build linux
 
 // Package daemon — долгоживущий процесс routerd (routerd run): применяет
-// sysctl и правила nftables, ведёт DNS-фильтр, перечитывает конфиги по SIGHUP
-// и убирает за собой правила при остановке.
+// sysctl, правила nftables и policy routing, обслуживает DNS на :53,
+// перечитывает конфиги по SIGHUP и убирает за собой правила при остановке.
 package daemon
 
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"syscall"
 	"time"
@@ -25,11 +25,11 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/volkserg/rpi5-gorouter/internal/config"
-	"github.com/volkserg/rpi5-gorouter/internal/dnsmasq"
+	"github.com/volkserg/rpi5-gorouter/internal/dnsproxy"
+	"github.com/volkserg/rpi5-gorouter/internal/domain"
 	"github.com/volkserg/rpi5-gorouter/internal/firewall"
 	"github.com/volkserg/rpi5-gorouter/internal/lists"
 	"github.com/volkserg/rpi5-gorouter/internal/routing"
-	"github.com/volkserg/rpi5-gorouter/internal/services"
 	"github.com/volkserg/rpi5-gorouter/internal/sysctl"
 	"github.com/volkserg/rpi5-gorouter/internal/sysinfo"
 )
@@ -37,22 +37,21 @@ import (
 // healthInterval — как часто проверяется доступность туннеля.
 const healthInterval = 2 * time.Second
 
-// DefaultRunDir — каталог сгенерированных файлов времени выполнения.
-const DefaultRunDir = "/run/routerd"
-
 // Options — параметры демона.
 type Options struct {
 	ConfigDir string
 	ProcRoot  string
-	RunDir    string
 	Log       *slog.Logger
-	Services  func(context.Context) (services.Manager, error)
 }
 
 type daemon struct {
 	Options
 	nft *nftables.Conn
 	nl  *netlink.Handle
+	dyn *firewall.Dynamic
+	dns *dnsproxy.Server
+	// listen — адреса, на которых сейчас слушает dns.
+	listen []netip.AddrPort
 
 	// Состояние после последнего успешного apply.
 	cfg     *config.Config
@@ -75,13 +74,17 @@ func Run(ctx context.Context, o Options) error {
 		return fmt.Errorf("netlink: %w", err)
 	}
 	defer nl.Close()
-	d := &daemon{Options: o, nft: nft, nl: nl}
+	dyn, err := firewall.NewDynamic(24*time.Hour, o.Log)
+	if err != nil {
+		return fmt.Errorf("netlink nftables: %w", err)
+	}
+	d := &daemon{Options: o, nft: nft, nl: nl, dyn: dyn}
 
 	sigs := make(chan os.Signal, 4)
 	signal.Notify(sigs, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT)
 	defer signal.Stop(sigs)
 
-	if err := d.apply(ctx, true); err != nil {
+	if err := d.apply(); err != nil {
 		d.cleanup()
 		return err
 	}
@@ -105,7 +108,7 @@ func Run(ctx context.Context, o Options) error {
 				return nil
 			}
 			notify("RELOADING=1", "MONOTONIC_USEC="+monotonicUsec())
-			if err := d.apply(ctx, false); err != nil {
+			if err := d.apply(); err != nil {
 				d.Log.Error("перезагрузка не удалась, действуют прежние правила", "ошибка", err)
 				notify("READY=1", "STATUS=ошибка перезагрузки: "+err.Error())
 				continue
@@ -117,7 +120,7 @@ func Run(ctx context.Context, o Options) error {
 }
 
 // apply читает конфиги и приводит систему к ним.
-func (d *daemon) apply(ctx context.Context, initial bool) error {
+func (d *daemon) apply() error {
 	cfg, warns, err := config.Load(config.Path(d.ConfigDir))
 	for _, w := range warns {
 		d.Log.Warn(string(w))
@@ -183,7 +186,7 @@ func (d *daemon) apply(ctx context.Context, initial bool) error {
 		return err
 	}
 
-	if err := d.syncDNS(ctx, dnsmasq.Render(cfg, entries, overrides), initial || recreated); err != nil {
+	if err := d.syncDNS(cfg, entries, overrides, recreated); err != nil {
 		return err
 	}
 	d.cfg, d.spec, d.healthy, d.tunUp = cfg, spec, healthy, tunUp
@@ -279,36 +282,58 @@ func (d *daemon) status() string {
 	return s
 }
 
-// syncDNS записывает конфиг dnsmasq и перезапускает его, если конфиг
-// изменился (или force — после старта и пересоздания set'ов).
-func (d *daemon) syncDNS(ctx context.Context, conf []byte, force bool) error {
-	path := filepath.Join(d.RunDir, "dnsmasq.conf")
-	old, _ := os.ReadFile(path)
-	if !force && bytes.Equal(old, conf) {
+// syncDNS приводит DNS-прокси к конфигу: правила меняются на лету,
+// слушатели пересоздаются, только если сменились адреса (RPI5_IP).
+func (d *daemon) syncDNS(cfg *config.Config, entries []lists.Entry, overrides []lists.Override, recreated bool) error {
+	d.dyn.SetFloor(cfg.VPNDynamicTimeout)
+	if recreated {
+		d.dyn.Reset()
+	}
+	vpn := domain.NewMatcher[struct{}]()
+	for _, e := range entries {
+		if e.Kind == lists.KindDomain {
+			vpn.Set(e.Domain, struct{}{})
+		}
+	}
+	ovr := domain.NewMatcher[[]netip.AddrPort]()
+	for _, o := range overrides {
+		ups, _ := ovr.Get(o.Domain)
+		ovr.Set(o.Domain, append(ups, o.Upstream))
+	}
+	rules := dnsproxy.Rules{
+		Upstream:   cfg.DNSUpstream,
+		Overrides:  ovr,
+		VPN:        vpn,
+		FilterAAAA: cfg.FilterAAAA,
+		ECS:        cfg.DNSECS,
+	}
+
+	// Как dnsmasq с interface=eth0: адрес LAN и loopback (на нём резолвит GOST).
+	listen := []netip.AddrPort{
+		netip.AddrPortFrom(cfg.RPi5IP, 53),
+		netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), 53),
+	}
+	if d.dns != nil && slices.Equal(listen, d.listen) {
+		d.dns.SetRules(rules)
 		return nil
 	}
-	if err := os.MkdirAll(d.RunDir, 0o755); err != nil {
+	if d.dns != nil {
+		d.dns.Shutdown()
+		d.dns = nil
+	}
+	srv := dnsproxy.New(dnsproxy.Options{Listen: listen, Rules: rules, Sets: d.dyn, Log: d.Log})
+	if err := srv.Start(); err != nil {
 		return err
 	}
-	if err := writeAtomic(path, conf); err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	m, err := d.Services(ctx)
-	if err != nil {
-		return err
-	}
-	defer m.Close()
-	if err := m.Restart(ctx, dnsmasq.Unit); err != nil {
-		return fmt.Errorf("перезапуск %s: %w", dnsmasq.Unit, err)
-	}
+	d.dns, d.listen = srv, listen
 	return nil
 }
 
-// cleanup убирает правила routerd (как stop в bash-версии); dnsmasq
-// останавливает systemd (PartOf=routerd.service).
+// cleanup останавливает DNS и убирает правила routerd (как stop в bash-версии).
 func (d *daemon) cleanup() {
+	if d.dns != nil {
+		d.dns.Shutdown()
+	}
 	if err := firewall.Remove(d.nft); err != nil {
 		d.Log.Error("удаление таблицы nftables", "ошибка", err)
 	}
@@ -334,21 +359,4 @@ func monotonicUsec() string {
 		return "0"
 	}
 	return strconv.FormatInt(ts.Nano()/1000, 10)
-}
-
-func writeAtomic(path string, data []byte) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	_, werr := tmp.Write(data)
-	cerr := tmp.Close()
-	if err := errors.Join(werr, cerr); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
 }

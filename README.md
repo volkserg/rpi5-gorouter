@@ -5,10 +5,11 @@
 и подсетям через VPN-туннель (например, к корпоративной сети) на одном порту `eth0`.
 Замена bash-версии без вызова внешних утилит в рабочем режиме.
 
-Статус: **этап 2a** — демон `routerd run`: sysctl, правила nftables и policy
+Статус: **этап 3** — демон `routerd run`: sysctl, правила nftables и policy
 routing через netlink, три режима отправки трафика в туннель (`redirect`,
-`tproxy`, `route`) и поведение при недоступном туннеле (`VPN_FAILOVER`);
-DNS-фильтр на dnsmasq с `nftset=` (временно, до DNS-прокси routerd);
+`tproxy`, `route`) с `VPN_FAILOVER`; встроенный DNS-прокси на :53 (вместо
+dnsmasq) — адреса доменов из списка попадают в nft-set со сроком
+max(TTL, `VPN_DYNAMIC_TIMEOUT`), ECS в Pi-hole, фильтр AAAA, override-upstream;
 все команды `router_service_ctl`, кроме `apply-network`.
 Архитектура, решения и план — в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 

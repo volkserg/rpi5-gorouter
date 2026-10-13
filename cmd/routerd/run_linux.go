@@ -10,7 +10,6 @@ import (
 
 	"github.com/volkserg/rpi5-gorouter/internal/cli"
 	"github.com/volkserg/rpi5-gorouter/internal/daemon"
-	"github.com/volkserg/rpi5-gorouter/internal/services"
 )
 
 func runDaemon() int {
@@ -27,9 +26,7 @@ func runDaemon() int {
 	err := daemon.Run(context.Background(), daemon.Options{
 		ConfigDir: env.ConfigDir,
 		ProcRoot:  env.ProcRoot,
-		RunDir:    daemon.DefaultRunDir,
 		Log:       log,
-		Services:  services.Connect,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "routerd: %v\n", err)

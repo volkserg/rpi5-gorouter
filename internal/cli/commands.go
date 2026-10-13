@@ -36,8 +36,13 @@ func cmdInfo(x *ctx, _ []string) int {
 	x.out("  Маска / broadcast:  %s / %s", cfg.Netmask(), cfg.Broadcast())
 	x.out("  Пул DHCP:           %s - %s", cfg.PoolStart, cfg.PoolEnd)
 	x.out("  Upstream DNS:       %s", strings.Join(dns, ", "))
-	x.out("  DNS-upstream:       %s (Pi-hole)", cfg.DNSUpstream)
-	x.out("  Туннель:            режим %s, порт %d", cfg.VPNMode, cfg.VPNPort)
+	x.out("  DNS-upstream:       %s (Pi-hole), ECS: %s", cfg.DNSUpstream, yesNo(cfg.DNSECS))
+	x.out("  Фильтр AAAA:        %s", cfg.FilterAAAA)
+	failover := "closed"
+	if cfg.VPNFailoverOpen {
+		failover = "open"
+	}
+	x.out("  Туннель:            режим %s, порт %d, tun %s, VPN_FAILOVER=%s", cfg.VPNMode, cfg.VPNPort, cfg.VPNTun, failover)
 	x.out("  QUIC reject:        %s", yesNo(cfg.QUICReject))
 	x.out("  vpn_dynamic:        таймаут %s", cfg.VPNDynamicTimeout)
 	x.out("")

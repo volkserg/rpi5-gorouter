@@ -371,14 +371,17 @@ cmd_install() {
     mkdir -p "${CONFIG_DIR}"
     install -m 0644 "${LAB_DIR}"/conf/{router.conf,vpn_domains.txt,dns_override.txt} "${CONFIG_DIR}/"
 
-    install -m 0644 "${REPO_DIR}"/deploy/systemd/{routerd,routerd-dnsmasq}.service "${UNIT_DIR}/"
+    install -m 0644 "${REPO_DIR}"/deploy/systemd/routerd.service "${UNIT_DIR}/"
     in_ns routerd rpi
-    in_ns routerd-dnsmasq rpi
+    # До этапа 3 DNS обслуживал отдельный dnsmasq — убираем его со стенда.
+    systemctl disable --now routerd-dnsmasq 2>/dev/null || true
+    rm -rf "${UNIT_DIR}/routerd-dnsmasq.service" "${UNIT_DIR}/routerd-dnsmasq.service.d"
 
     # «Pi-hole»: заглушка на 127.0.0.1:5353 в namespace rpi, знает тестовые зоны.
     unit pihole-FTL rpi "/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/dev/null --pid-file= --log-facility=- \
---port=5353 --listen-address=127.0.0.1 --bind-interfaces --no-resolv --log-queries \
---address=/vpn.test/203.0.113.20 --address=/direct.test/203.0.113.10"
+--port=5353 --listen-address=127.0.0.1 --bind-interfaces --no-resolv --log-queries --local-ttl=120 \
+--address=/vpn.test/203.0.113.20 --address=/vpn.test/2001:db8::20 \
+--address=/direct.test/203.0.113.10 --address=/direct.test/2001:db8::10"
     # DNS внутренней зоны corp.test (для dns_override.txt) на 203.0.113.53.
     unit lab-dns-corp inet "/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/dev/null --pid-file= --log-facility=- \
 --listen-address=203.0.113.53 --bind-interfaces --no-resolv --log-queries --address=/corp.test/203.0.113.10"
@@ -399,7 +402,7 @@ cmd_install() {
     gost_client "$(conf_get VPN_MODE)"
 
     systemctl daemon-reload
-    systemctl restart lab-dns-corp lab-dns-vpn lab-web-direct lab-web-vpn lab-gost-exit
+    systemctl restart pihole-FTL lab-dns-corp lab-dns-vpn lab-web-direct lab-web-vpn lab-gost-exit
 
     # Клиент: пока DHCP не перенесён в routerd (этап 4) — статический адрес.
     nsx client ip addr replace 192.168.3.50/24 dev eth0
@@ -407,8 +410,9 @@ cmd_install() {
     mkdir -p /etc/netns/lab-client
     echo "nameserver 192.168.3.2" >/etc/netns/lab-client/resolv.conf
 
-    log_info "Установлено. Запуск стека как на бою: router_service_ctl start"
-    ctl start
+    # restart, а не start: при переустановке должен заработать новый бинарник.
+    log_info "Установлено. Перезапуск стека как на бою: router_service_ctl restart"
+    ctl restart
 }
 
 #===============================================================================
@@ -486,6 +490,24 @@ quic_refused() {
     return ${rc}
 }
 table_present() { nsx rpi nft list tables | grep -q router_service; }
+resolve6() { nsx client dig +short +time=2 +tries=1 AAAA "$1" @192.168.3.2; }
+rcode() { nsx client dig +time=2 +tries=1 "$@" @192.168.3.2 | grep -oE 'status: [A-Z]+' | cut -d' ' -f2; }
+# ecs_sent: routerd передаёт «Pi-hole» адрес клиента (EDNS Client Subnet).
+# tcpdump разбирает порт 5353 как mDNS и опции EDNS не печатает, поэтому
+# ищем опцию в байтах пакета: код 8, длина 8, IPv4, /32, 192.168.3.50.
+ecs_sent() {
+    local cap
+    cap="$(mktemp)"
+    nsx rpi timeout 4 tcpdump -i lo -n -x -c 1 "udp dst port 5353" >"${cap}" 2>/dev/null &
+    sleep 0.5
+    resolve client direct.test 192.168.3.2 >/dev/null || true
+    wait
+    grep -E '^\s+0x' "${cap}" | cut -d: -f2 | tr -d ' \n' | grep -q "0008000800012000c0a80332"
+    local rc=$?
+    rm -f "${cap}"
+    return ${rc}
+}
+dns_down() { ! nsx client dig +short +time=1 +tries=1 vpn.test @192.168.3.2 >/dev/null 2>&1; }
 # Откуда пришёл последний UDP-запрос к сервису на адресе vpn.test.
 udp_seen() {
     nsx client dig +short +time=2 +tries=1 udp.test @203.0.113.20 >/dev/null 2>&1 || true
@@ -527,11 +549,16 @@ cmd_test() {
     log_info "DNS"
     expect "vpn.test резолвится через routerd → «Pi-hole»" eq "$(resolve client vpn.test 192.168.3.2)" 203.0.113.20
     expect "адрес vpn.test попал в vpn_dynamic" set_has vpn_dynamic 203.0.113.20
-    expect "у адреса из DNS есть срок жизни (VPN_DYNAMIC_TIMEOUT)" set_has vpn_dynamic "203.0.113.20 expires"
+    expect "у адреса из DNS есть срок жизни (VPN_DYNAMIC_TIMEOUT)" set_has vpn_dynamic "203.0.113.20 .*expires"
     expect "direct.test резолвится" eq "$(resolve client direct.test 192.168.3.2)" 203.0.113.10
     expect "адрес direct.test в set не попал" not set_has vpn_dynamic 203.0.113.10
     expect "corp.test (dns_override) отвечает свой DNS 203.0.113.53" eq "$(resolve client corp.test 192.168.3.2)" 203.0.113.10
     expect "DNS слушается и на loopback RPi (для GOST)" eq "$(resolve rpi vpn.test 127.0.0.1)" 203.0.113.20
+    expect "срок жизни адреса — max(TTL 120s, VPN_DYNAMIC_TIMEOUT 30s) = 2m" set_has vpn_dynamic "203.0.113.20 timeout 2m"
+    expect "AAAA для vpn.test отфильтрован (FILTER_AAAA=vpn)" eq "$(resolve6 vpn.test)" ""
+    expect "AAAA для direct.test проходит" eq "$(resolve6 direct.test)" 2001:db8::10
+    expect "bogus-priv: PTR частной сети — NXDOMAIN без upstream" eq "$(rcode -x 192.168.3.77)" NXDOMAIN
+    expect "ECS: «Pi-hole» видит адрес клиента 192.168.3.50" ecs_sent
 
     log_info "Маршрутизация"
     fetch vpn.test
@@ -592,7 +619,7 @@ cmd_test() {
     log_info "Остановка и запуск"
     ctl stop >/dev/null
     expect "stop убирает таблицу router_service" not table_present
-    expect "stop останавливает DNS-фильтр" not systemctl is-active --quiet routerd-dnsmasq
+    expect "stop: DNS на :53 больше не отвечает" dns_down
     ctl start >/dev/null
     expect "start возвращает таблицу" table_present
 
