@@ -12,6 +12,7 @@ build-rpi:
 # Вспомогательные программы стенда (linux/arm64).
 build-lab:
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -o bin/dohd-linux-arm64 ./testbed/dohd
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -o bin/dhcpprobe-linux-arm64 ./testbed/dhcpprobe
 
 # Бинарник для текущей платформы (CLI-команды работают и на macOS).
 build:

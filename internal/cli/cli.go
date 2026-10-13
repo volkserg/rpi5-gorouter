@@ -12,6 +12,7 @@ import (
 	"strconv"
 
 	"github.com/volkserg/rpi5-gorouter/internal/config"
+	"github.com/volkserg/rpi5-gorouter/internal/dhcp"
 	"github.com/volkserg/rpi5-gorouter/internal/lists"
 	"github.com/volkserg/rpi5-gorouter/internal/services"
 )
@@ -23,6 +24,8 @@ type Env struct {
 	Color          bool
 	// ProcRoot — корень procfs (/proc).
 	ProcRoot string
+	// StateDir — каталог состояния routerd (аренды DHCP).
+	StateDir string
 	// IsRoot сообщает, запущена ли команда от root.
 	IsRoot func() bool
 	// Services подключается к systemd.
@@ -38,12 +41,17 @@ func DefaultEnv() Env {
 	if dir == "" {
 		dir = config.DefaultDir
 	}
+	state := os.Getenv("ROUTERD_STATE_DIR")
+	if state == "" {
+		state = dhcp.DefaultStateDir
+	}
 	return Env{
 		Stdout:    os.Stdout,
 		Stderr:    os.Stderr,
 		ConfigDir: dir,
 		Color:     isTerminal(os.Stdout) && os.Getenv("NO_COLOR") == "",
 		ProcRoot:  "/proc",
+		StateDir:  state,
 		IsRoot:    func() bool { return os.Geteuid() == 0 },
 		Services:  services.Connect,
 		Journal:   journalctl,

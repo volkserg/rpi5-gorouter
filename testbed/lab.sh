@@ -5,7 +5,8 @@
 #
 # Топология:
 #
-#   lab-client ─┐
+#   lab-client ─┐   клиент: адрес по DHCP от routerd
+#   lab-client2 ┤   устройство со статикой (проверка конфликтов адресов)
 #               ├─ lab-lan (br0, L2-коммутатор LAN 192.168.3.0/24, broadcast для DHCP)
 #   lab-rpi ────┤      rpi 192.168.3.2 — тестируемый routerd
 #   lab-router ─┘      router 192.168.3.1 — «домашний роутер», DHCP выключен
@@ -38,7 +39,7 @@ ETALON="${LAB_DIR}/kernel-rpi.txt"
 CONFIG_DIR="/usr/local/etc/router_service"
 UNIT_DIR="/etc/systemd/system"
 SRV_DIR="/srv/lab"
-NAMESPACES=(lan router rpi client inet exit)
+NAMESPACES=(lan router rpi client client2 inet exit)
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -273,7 +274,7 @@ cmd_up() {
     nsx lan ip link add br0 type bridge
     nsx lan ip link set br0 up
     local port
-    for port in router rpi client; do
+    for port in router rpi client client2; do
         veth_pair "${port}" eth0 lan "p-${port}"
         nsx lan ip link set "p-${port}" master br0
     done
@@ -322,7 +323,10 @@ EOF
     nsx rpi ip addr add 192.168.3.2/24 dev eth0
     nsx rpi ip route add default via 192.168.3.1
 
-    # client — без адреса: получает его по DHCP от routerd.
+    # client и client2 — без адреса: client получает его по DHCP от routerd.
+    # MAC фиксированы: для routerd это те же устройства при пересоздании стенда.
+    nsx client ip link set eth0 address 02:00:00:00:00:50
+    nsx client2 ip link set eth0 address 02:00:00:00:00:51
     log_info "Стенд поднят. Проверка связности..."
     selftest
 }
@@ -361,6 +365,8 @@ cmd_down() {
     for ns in $(ip netns list | awk '/^lab-/ {print $1}'); do
         ip netns del "${ns}"
     done
+    # Новый стенд — чистая база аренд DHCP.
+    rm -f /var/lib/routerd/leases.json /run/lab-dhcp/*.env
     log_info "Стенд снесён."
 }
 
@@ -439,6 +445,7 @@ install_dns_chain() {
     local dohd="${REPO_DIR}/bin/dohd-linux-arm64"
     [[ -x "${dohd}" ]] || die "нет ${dohd} — соберите на Mac: make build-lab"
     install -m 0755 "${dohd}" /usr/local/bin/lab-dohd
+    install -m 0755 "${REPO_DIR}/bin/dhcpprobe-linux-arm64" /usr/local/bin/lab-dhcpprobe
     pki
 
     unit lab-dns-public inet "/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/dev/null --pid-file= --log-facility=- \
@@ -531,15 +538,12 @@ cmd_install() {
     systemctl restart lab-dns-public lab-dohd lab-dns-corp lab-dns-vpn lab-web-direct lab-web-vpn lab-gost-exit
     systemctl restart dnscrypt-proxy.socket pihole-FTL
 
-    # Клиент: пока DHCP не перенесён в routerd (этап 4) — статический адрес.
-    nsx client ip addr replace 192.168.3.50/24 dev eth0
-    nsx client ip route replace default via 192.168.3.2
-    mkdir -p /etc/netns/lab-client
-    echo "nameserver 192.168.3.2" >/etc/netns/lab-client/resolv.conf
-
     # restart, а не start: при переустановке должен заработать новый бинарник.
     log_info "Установлено. Перезапуск стека как на бою: router_service_ctl restart"
     ctl restart
+    # Клиент получает адрес по DHCP от routerd.
+    dhcp_client client >/dev/null || die "клиент не получил адрес по DHCP"
+    log_info "Клиент получил по DHCP $(client_ip)"
 }
 
 #===============================================================================
@@ -617,6 +621,25 @@ quic_refused() {
     return ${rc}
 }
 table_present() { nsx rpi nft list tables | grep -q router_service; }
+# dhcp_client <ns> [аргументы udhcpc…] — получить аренду (hostname из LAB_HOST, по умолчанию labclient).
+dhcp_client() {
+    local ns=$1
+    shift
+    nsx "${ns}" env LAB_NS="${ns}" busybox udhcpc -i eth0 -s "${LAB_DIR}/udhcpc.sh" \
+        -q -n -t 4 -T 1 -x "hostname:${LAB_HOST:-labclient}" "$@" 2>&1
+}
+lease_var() { sed -n "s/^$2=//p" "/run/lab-dhcp/$1.env" 2>/dev/null; }
+client_ip() { lease_var client ip; }
+in_pool() {
+    local last=${1##*.}
+    [[ "${1%.*}" == 192.168.3 && ${last} -ge 100 && ${last} -le 250 ]]
+}
+since_log() { journalctl -u routerd --since "@$1" --no-pager -o cat; }
+eq_lease_state() { [[ "$(lease_state "$1")" == "$2" ]]; }
+lease_state() { grep -A6 "\"ip\": \"$1\"" /var/lib/routerd/leases.json | sed -n 's/.*"state": "\(.*\)".*/\1/p' | head -1; }
+# Адрес клиента в hex — для поиска ECS в байтах пакета.
+ip_hex() { printf '%02x%02x%02x%02x' ${1//./ }; }
+
 resolve6() { nsx client dig +short +time=2 +tries=1 AAAA "$1" @192.168.3.2; }
 rcode() { nsx client dig +time=2 +tries=1 "$@" @192.168.3.2 | grep -oE 'status: [A-Z]+' | cut -d' ' -f2; }
 # ecs_sent: routerd передаёт «Pi-hole» адрес клиента (EDNS Client Subnet).
@@ -629,7 +652,7 @@ ecs_sent() {
     sleep 0.5
     resolve client direct.example 192.168.3.2 >/dev/null || true
     wait
-    grep -E '^\s+0x' "${cap}" | cut -d: -f2 | tr -d ' \n' | grep -q "0008000800012000c0a80332"
+    grep -E '^\s+0x' "${cap}" | cut -d: -f2 | tr -d ' \n' | grep -q "0008000800012000$(ip_hex "$(client_ip)")"
     local rc=$?
     rm -f "${cap}"
     return ${rc}
@@ -678,6 +701,44 @@ cmd_test() {
     mode="$(conf_get VPN_MODE)"
     log_info "Режим ${mode}"
 
+    log_info "DHCP"
+    local cip ts nip
+    cip="$(client_ip)"
+    expect "клиент получил адрес из пула: ${cip}" in_pool "${cip}"
+    expect "шлюз и DNS клиента — RPi 192.168.3.2" eq "$(lease_var client router) $(lease_var client dns)" "192.168.3.2 192.168.3.2"
+    expect "домен lan, аренда 24h, сервер 192.168.3.2" \
+        eq "$(lease_var client domain) $(lease_var client lease) $(lease_var client serverid)" "lan 86400 192.168.3.2"
+    expect "labclient.lan → адрес клиента" eq "$(resolve client labclient.lan 192.168.3.2)" "${cip}"
+    expect "PTR адреса клиента → labclient.lan" eq "$(nsx client dig +short -x "${cip}" @192.168.3.2)" labclient.lan.
+    expect "чужое имя в .lan — NXDOMAIN (не уходит в Pi-hole)" eq "$(rcode nobody.lan)" NXDOMAIN
+
+    systemctl restart routerd
+    dhcp_client client -r "${cip}" >/dev/null
+    expect "аренда пережила перезапуск routerd: тот же адрес" eq "$(client_ip)" "${cip}"
+
+    # busybox udhcpc не шлёт REQUEST в INIT-REBOOT и RELEASE по запросу — пробник.
+    expect "REQUEST адреса чужой подсети (INIT-REBOOT) → DHCPNAK" \
+        eq "$(nsx client /usr/local/bin/lab-dhcpprobe -iface eth0 -request 10.9.9.9 | cut -d' ' -f1)" NAK
+    expect "REQUEST своего адреса после перезагрузки клиента → DHCPACK" \
+        eq "$(nsx client /usr/local/bin/lab-dhcpprobe -iface eth0 -request "${cip}")" "ACK ${cip}"
+
+    # Устройство со статикой на следующем свободном адресе: routerd видит его
+    # в ARP и не выдаёт этот адрес новому клиенту.
+    nip="${cip%.*}.$(( ${cip##*.} + 1 ))"
+    nsx client2 ip addr replace "${nip}/24" dev eth0
+    nsx client2 ping -c 1 -W 1 192.168.3.2 >/dev/null 2>&1 || true
+    LAB_HOST=altclient dhcp_client client -x 0x3d:01aabbccddeeff >/dev/null
+    expect "адрес ${nip}, занятый устройством со статикой, не выдан" \
+        bash -c "ip=\$(sed -n 's/^ip=//p' /run/lab-dhcp/client.env); [[ \$ip != ${nip} && \$ip != ${cip} ]]"
+    nsx client2 ip addr flush dev eth0
+    dhcp_client client -r "${cip}" >/dev/null
+    expect "исходный клиент вернул свой адрес" eq "$(client_ip)" "${cip}"
+
+    nsx client /usr/local/bin/lab-dhcpprobe -iface eth0 -release "${cip}" -server 192.168.3.2 >/dev/null
+    expect "DHCPRELEASE: аренда освобождена" wait_for 3 eq_lease_state "${cip}" released
+    dhcp_client client -r "${cip}" >/dev/null
+    expect "после release тот же адрес снова выдан" eq "$(lease_state "${cip}") $(client_ip)" "bound ${cip}"
+
     log_info "DNS"
     expect "vpn.example резолвится через routerd → «Pi-hole»" eq "$(resolve client vpn.example 192.168.3.2)" 203.0.113.20
     expect "адрес vpn.example попал в vpn_dynamic" set_has vpn_dynamic 203.0.113.20
@@ -691,12 +752,12 @@ cmd_test() {
     expect "AAAA для vpn.example отфильтрован (FILTER_AAAA=vpn)" eq "$(resolve6 vpn.example)" ""
     expect "AAAA для direct.example проходит" eq "$(resolve6 direct.example)" 2001:db8::10
     expect "bogus-priv: PTR частной сети — NXDOMAIN без upstream" eq "$(rcode -x 192.168.3.77)" NXDOMAIN
-    expect "ECS: routerd передаёт в Pi-hole адрес клиента 192.168.3.50" ecs_sent
+    expect "ECS: routerd передаёт в Pi-hole адрес клиента" ecs_sent
     if command -v pihole >/dev/null; then
         local probe="chk${RANDOM}.direct.example"
         resolve client "${probe}" 192.168.3.2 >/dev/null || true
         expect "цепочка до DoH: запрос дошёл до DoH-сервера стенда" doh_saw "${probe}"
-        expect "Pi-hole видит реального клиента 192.168.3.50 (ECS)" wait_for 3 pihole_client_is "${probe}" 192.168.3.50
+        expect "Pi-hole видит реального клиента (ECS)" wait_for 3 pihole_client_is "${probe}" "$(client_ip)"
         expect "Pi-hole блокирует ads.example из denylist" eq "$(resolve client ads.example 192.168.3.2)" 0.0.0.0
     fi
 

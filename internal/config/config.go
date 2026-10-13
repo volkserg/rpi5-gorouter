@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/volkserg/rpi5-gorouter/internal/domain"
 )
 
 const (
@@ -64,6 +66,13 @@ type Config struct {
 	// DNSECS — передавать в DNSUpstream адрес клиента (EDNS Client Subnet /32),
 	// чтобы Pi-hole видел реальных клиентов, а не 127.0.0.1.
 	DNSECS bool
+
+	// DHCPEnabled — обслуживать DHCP в LAN (вместо Kea).
+	DHCPEnabled bool
+	// DHCPLeaseTime — срок аренды.
+	DHCPLeaseTime time.Duration
+	// LocalDomain — домен LAN (опция 15) и локальная DNS-зона имён клиентов.
+	LocalDomain string
 }
 
 // Значения FILTER_AAAA.
@@ -96,6 +105,9 @@ var defaults = map[string]string{
 	"DNS_UPSTREAM":        "127.0.0.1#5353",
 	"FILTER_AAAA":         FilterAAAAVPN,
 	"DNS_ECS":             "yes",
+	"DHCP_ENABLED":        "yes",
+	"DHCP_LEASE_TIME":     "24h",
+	"LOCAL_DOMAIN":        "lan",
 }
 
 // Warning — некритичное замечание к конфигу (неизвестный ключ, отсутствующий файл).
@@ -216,6 +228,20 @@ func FromValues(values map[string]string) (*Config, error) {
 		errs = append(errs, fmt.Errorf("DNS_ECS: %w", err))
 	} else {
 		cfg.DNSECS = b
+	}
+	if b, err := parseBool(get("DHCP_ENABLED")); err != nil {
+		errs = append(errs, fmt.Errorf("DHCP_ENABLED: %w", err))
+	} else {
+		cfg.DHCPEnabled = b
+	}
+	if d, err := time.ParseDuration(get("DHCP_LEASE_TIME")); err != nil || d < time.Minute {
+		errs = append(errs, fmt.Errorf("DHCP_LEASE_TIME=%q: ожидается длительность не меньше 1m (например, 24h)", get("DHCP_LEASE_TIME")))
+	} else {
+		cfg.DHCPLeaseTime = d
+	}
+	cfg.LocalDomain = strings.ToLower(strings.TrimSuffix(get("LOCAL_DOMAIN"), "."))
+	if err := domain.Validate(cfg.LocalDomain); err != nil {
+		errs = append(errs, fmt.Errorf("LOCAL_DOMAIN=%q: %v", get("LOCAL_DOMAIN"), err))
 	}
 	if p, err := netip.ParsePrefix(get("LAN_SUBNET")); err != nil || !p.Addr().Is4() {
 		errs = append(errs, fmt.Errorf("LAN_SUBNET=%q: ожидается подсеть IPv4 в виде a.b.c.d/N", get("LAN_SUBNET")))

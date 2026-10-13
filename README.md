@@ -5,12 +5,14 @@
 и подсетям через VPN-туннель (например, к корпоративной сети) на одном порту `eth0`.
 Замена bash-версии без вызова внешних утилит в рабочем режиме.
 
-Статус: **этап 3** — демон `routerd run`: sysctl, правила nftables и policy
+Статус: **этап 4** — демон `routerd run`: sysctl, правила nftables и policy
 routing через netlink, три режима отправки трафика в туннель (`redirect`,
 `tproxy`, `route`) с `VPN_FAILOVER`; встроенный DNS-прокси на :53 (вместо
 dnsmasq) — адреса доменов из списка попадают в nft-set со сроком
 max(TTL, `VPN_DYNAMIC_TIMEOUT`), ECS в Pi-hole, фильтр AAAA, override-upstream;
-все команды `router_service_ctl`, кроме `apply-network`.
+DHCP-сервер (вместо Kea) с арендами в `/var/lib/routerd/leases.json` и
+именами клиентов в зоне `*.lan`; все команды `router_service_ctl`, кроме
+`apply-network`.
 Архитектура, решения и план — в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Сборка
@@ -43,7 +45,7 @@ Network namespace в Linux-VM (OrbStack, Debian 13 arm64), без Docker —
 см. `testbed/lab.sh`:
 
 ```bash
-make build-rpi build-lab
+make build-rpi build-lab   # build-lab: dohd и dhcpprobe для стенда
 orb -m routerd-lab sudo ./testbed/lab.sh bootstrap      # один раз: пакеты, GOST
 orb -m routerd-lab sudo ./testbed/lab.sh bootstrap-dns  # один раз: Pi-hole, dnscrypt-proxy
 orb -m routerd-lab sudo ./testbed/lab.sh check-kernel   # ядро VM против эталона RPi

@@ -54,7 +54,8 @@ UDP/443 к VPN-адресам → REJECT icmp port-unreachable (браузер �
   не знает, его зона ответственности заканчивается на локальном слушателе GOST или `tun0`.
 - Новые ключи `router.conf` допустимы, всегда с дефолтами: `VPN_MODE`, `VPN_FAILOVER`,
   `VPN_PORT`, `VPN_TUN`, `QUIC_REJECT`, `VPN_DYNAMIC_TIMEOUT` (24h),
-  `DNS_UPSTREAM` (`127.0.0.1#5353`), `FILTER_AAAA` (`vpn`), `DNS_ECS` (`yes`).
+  `DNS_UPSTREAM` (`127.0.0.1#5353`), `FILTER_AAAA` (`vpn`), `DNS_ECS` (`yes`),
+  `DHCP_ENABLED` (`yes`), `DHCP_LEASE_TIME` (`24h`), `LOCAL_DOMAIN` (`lan`).
 - `routerd.service` — `Type=notify-reload`: `reload-vpn-domains` завершается,
   когда routerd применил списки; статус применения — в `StatusText` юнита.
 - DNS-прокси (этап 3): слушает адрес RPi и `127.0.0.1` на :53 (как dnsmasq с
@@ -71,6 +72,23 @@ UDP/443 к VPN-адресам → REJECT icmp port-unreachable (браузер �
 - Модуль требует Go 1.25 (зависимости `miekg/dns`, `insomniacslk/dhcp`).
   Сборка — кросс-компиляция на машине разработчика, бинарник статический;
   на Debian 13 Go 1.25+ есть в trixie-backports.
+- DHCP (этап 4): UDP :67 на интерфейсе LAN (SO_BINDTODEVICE), ответы клиентам
+  без адреса — broadcast (raw-сокет не нужен). Опции как в Kea: маска, шлюз и DNS =
+  RPi, broadcast, домен (`LOCAL_DOMAIN`), срок аренды (`DHCP_LEASE_TIME`, 24h),
+  T1 = 1/2, T2 = 7/8 срока. Клиент — по client-id (опция 61), иначе по MAC.
+  Выбор адреса: прежний адрес клиента → запрошенный → никогда не выданный →
+  давно истёкший; адреса RPi и роутера не выдаются. «Терпимый authoritative»:
+  REQUEST адреса чужой подсети, вне пула или занятого — NAK, свободного из
+  пула — ACK даже без аренды. Перед выдачей — таблица соседей ядра: адрес,
+  на котором живёт устройство с другим MAC (статика), не выдаётся 10 минут;
+  DECLINE — так же. Аренды — `/var/lib/routerd/leases.json` (атомарная запись
+  при каждом изменении); испорченный файл — старт с пустой базой. Relay-агенты
+  не поддерживаются.
+- Имена клиентов: hostname (опция 12) → метка DNS (`iPhone (Bob)` → `iphone-bob`),
+  повторы — `-2`, `-3`; имя закреплено за клиентом, пока его запись свежая
+  (истекла не раньше срока аренды назад). DNS-прокси отвечает на `имя.lan` и PTR
+  адресов из аренд сам, никогда не пересылая в Pi-hole (тот ответил бы на `.lan`
+  NXDOMAIN); чужие имена в `.lan` — NXDOMAIN.
 - Перезагрузка сохраняет адреса в `vpn_dynamic`; если параметры set'ов изменились
   (например, таймаут), таблица пересоздаётся — не все ядра обновляют их на месте.
 
@@ -140,14 +158,16 @@ internal/services/    systemd по D-Bus, порядок запуска (+ servi
 internal/sysinfo/     /proc: слушающие порты, sysctl (для status)
 internal/firewall/    nftables через netlink: таблица router_service, set'ы, правила (Linux)
 internal/sysctl/      запись /proc/sys (ip_forward, redirects — в т.ч. для интерфейса)
-internal/dnsproxy/    DNS-прокси на :53 (miekg/dns): override, nft-set по TTL, ECS, AAAA, bogus-priv
+internal/dnsproxy/    DNS-прокси на :53 (miekg/dns): override, nft-set по TTL, ECS, AAAA, bogus-priv,
+                      локальная зона *.lan
+internal/dhcp/        DHCP: пул и аренды (чистая логика), обработка сообщений, JSON-хранилище,
+                      зона имён; сокет :67 и проверка ARP — Linux
 internal/routing/     policy routing через netlink: ip rule, таблица 152 (Linux)
 internal/daemon/      routerd run: применение, sd_notify (notify-reload), SIGHUP,
                       слежение за туннелем, VPN_FAILOVER, очистка
 deploy/systemd/       routerd.service
 testbed/              стенд: lab.sh, эталон ядра RPi, конфиги стенда
 — далее по этапам —
-internal/dhcp/        аренды (чистая логика) + сервер
 internal/netcfg/      NetworkManager D-Bus / netlink (проверка)
 internal/managed/     pihole.toml, dnscrypt-proxy.toml
 internal/control/     unix-сокет CLI ↔ демон
@@ -169,7 +189,7 @@ Linux-специфичное — под `//go:build linux`, проверяетс
 | 2 | демон `routerd run`, nftables + sysctl (режим `redirect`), dnsmasq на `nftset=` как юнит `routerd-dnsmasq`; стенд и сквозные проверки | dnsmasq, Kea, nmcli |
 | 2a | режимы `tproxy` и `route`, `VPN_FAILOVER`, policy routing (`internal/routing`); стенд — все режимы × closed/open | dnsmasq, Kea, nmcli |
 | 3 | DNS-прокси на Go вместо dnsmasq; `routerd-dnsmasq` и пакет `internal/dnsmasq` удалены. Теневой режим не понадобился — боевая RPi до проверки всего на стенде не трогается | Kea, nmcli |
-| 4 | DHCP | nmcli |
+| 4 | DHCP вместо Kea (`insomniacslk/dhcp`), имена `*.lan` и PTR из аренд; клиент стенда получает адрес по DHCP | nmcli |
 | 5 | NetworkManager D-Bus, pihole/dnscrypt | — |
 | 6 | install.sh, completions, документация | — |
 
@@ -179,7 +199,10 @@ Linux-специфичное — под `//go:build linux`, проверяетс
 namespace, связанные veth-парами:
 
 - `rpi` — routerd, Pi-hole, dnscrypt-proxy, nftables, GOST-клиент;
-- `client` — udhcpc, dig, curl;
+- `client` — получает адрес по DHCP от routerd (busybox udhcpc), dig, curl;
+  `client2` — устройство со статикой для проверки конфликтов адресов;
+  REQUEST в состоянии INIT-REBOOT и RELEASE отправляет `testbed/dhcpprobe`
+  (busybox udhcpc их по запросу не шлёт);
 - `exit` — удалённый узел туннеля: GOST-сервер с той же конфигурацией, что в рабочей
   среде, и тестовый веб-сервер;
 - внешний роутер — отдельный namespace (не основной namespace VM, чтобы

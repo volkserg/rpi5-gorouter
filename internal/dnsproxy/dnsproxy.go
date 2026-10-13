@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,6 +27,19 @@ import (
 type SetUpdater interface {
 	Learn(addrs []netip.Addr, ttl time.Duration)
 }
+
+// LocalZone — локальная зона LAN (имена клиентов из DHCP-аренд).
+type LocalZone interface {
+	// Domain — имя зоны (lan).
+	Domain() string
+	// LookupName — адрес клиента с именем label (одна метка, без зоны).
+	LookupName(label string) (netip.Addr, bool)
+	// LookupAddr — имя (без зоны) клиента с адресом a.
+	LookupAddr(a netip.Addr) (string, bool)
+}
+
+// localTTL — TTL ответов из локальной зоны.
+const localTTL = 60
 
 // Значения Rules.FilterAAAA.
 const (
@@ -47,6 +61,8 @@ type Rules struct {
 	// ECS — передавать в Upstream адрес клиента (EDNS Client Subnet /32).
 	// В override-upstream адрес клиента не уходит никогда.
 	ECS bool
+	// Local — локальная зона; запросы в неё никогда не уходят наружу.
+	Local LocalZone
 }
 
 // Options — параметры сервера.
@@ -176,6 +192,11 @@ func (s *Server) handle(w dns.ResponseWriter, req *dns.Msg) *dns.Msg {
 		return s.forwardAndFix(req, []netip.AddrPort{r.Upstream}, udp, netip.Addr{})
 	}
 	q := req.Question[0]
+	if r.Local != nil {
+		if resp, ok := localAnswer(req, q, r.Local); ok {
+			return resp
+		}
+	}
 	_, _, isVPN := r.VPN.Lookup(q.Name)
 
 	switch {
@@ -332,6 +353,71 @@ func aRecords(resp *dns.Msg) ([]netip.Addr, time.Duration) {
 		}
 	}
 	return addrs, time.Duration(minTTL) * time.Second
+}
+
+// localAnswer отвечает на запросы в локальную зону (имя.lan) и на PTR
+// адресов из аренд. ok=false — запрос не относится к зоне.
+func localAnswer(req *dns.Msg, q dns.Question, z LocalZone) (*dns.Msg, bool) {
+	name := domain.Normalize(q.Name)
+	zone := z.Domain()
+
+	if q.Qtype == dns.TypePTR {
+		a, ok := reverseAddr(name)
+		if !ok {
+			return nil, false
+		}
+		host, ok := z.LookupAddr(a)
+		if !ok {
+			return nil, false // дальше — bogus-priv или upstream
+		}
+		m := authoritative(req, dns.RcodeSuccess)
+		m.Answer = append(m.Answer, &dns.PTR{
+			Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypePTR, Class: dns.ClassINET, Ttl: localTTL},
+			Ptr: dns.Fqdn(host + "." + zone),
+		})
+		return m, true
+	}
+
+	if name != zone && !strings.HasSuffix(name, "."+zone) {
+		return nil, false
+	}
+	label := strings.TrimSuffix(strings.TrimSuffix(name, zone), ".")
+	if label == "" {
+		return authoritative(req, dns.RcodeSuccess), true
+	}
+	a, ok := z.LookupName(label)
+	if !ok || strings.Contains(label, ".") {
+		return authoritative(req, dns.RcodeNameError), true
+	}
+	m := authoritative(req, dns.RcodeSuccess)
+	if q.Qtype == dns.TypeA || q.Qtype == dns.TypeANY {
+		m.Answer = append(m.Answer, &dns.A{
+			Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: localTTL},
+			A:   net.IP(a.AsSlice()),
+		})
+	}
+	return m, true
+}
+
+func authoritative(req *dns.Msg, rcode int) *dns.Msg {
+	m := reply(req, rcode)
+	m.Authoritative = true
+	return m
+}
+
+// reverseAddr — IPv4-адрес из имени d.c.b.a.in-addr.arpa.
+func reverseAddr(name string) (netip.Addr, bool) {
+	rest, ok := strings.CutSuffix(name, ".in-addr.arpa")
+	if !ok {
+		return netip.Addr{}, false
+	}
+	parts := strings.Split(rest, ".")
+	if len(parts) != 4 {
+		return netip.Addr{}, false
+	}
+	slices.Reverse(parts)
+	a, err := netip.ParseAddr(strings.Join(parts, "."))
+	return a, err == nil && a.Is4()
 }
 
 func reply(req *dns.Msg, rcode int) *dns.Msg {

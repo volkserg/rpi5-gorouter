@@ -378,3 +378,53 @@ func TestStartServeShutdown(t *testing.T) {
 		t.Error("после SetRules домен не должен попадать в set")
 	}
 }
+
+type fakeZone map[string]netip.Addr
+
+func (z fakeZone) Domain() string { return "lan" }
+func (z fakeZone) LookupName(l string) (netip.Addr, bool) {
+	a, ok := z[l]
+	return a, ok
+}
+func (z fakeZone) LookupAddr(a netip.Addr) (string, bool) {
+	for n, x := range z {
+		if x == a {
+			return n, true
+		}
+	}
+	return "", false
+}
+
+func TestLocalZone(t *testing.T) {
+	up := startUpstream(t, answerA([]uint32{60}, "203.0.113.10"))
+	p := newProxy(up, nil, func(r *Rules) {
+		r.Local = fakeZone{"laptop": netip.MustParseAddr("192.168.3.100")}
+	})
+
+	resp := p.handle(writer{remote: lanUDP}, query("Laptop.LAN", dns.TypeA, false))
+	if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) != 1 || resp.Answer[0].(*dns.A).A.String() != "192.168.3.100" || !resp.Authoritative {
+		t.Fatalf("A laptop.lan: %v", resp)
+	}
+	if resp := p.handle(writer{remote: lanUDP}, query("laptop.lan", dns.TypeAAAA, false)); resp.Rcode != dns.RcodeSuccess || len(resp.Answer) != 0 {
+		t.Errorf("AAAA laptop.lan: пустой NOERROR, got %v", resp)
+	}
+	if resp := p.handle(writer{remote: lanUDP}, query("nobody.lan", dns.TypeA, false)); resp.Rcode != dns.RcodeNameError {
+		t.Errorf("nobody.lan: NXDOMAIN, got %d", resp.Rcode)
+	}
+	resp = p.handle(writer{remote: lanUDP}, query("100.3.168.192.in-addr.arpa", dns.TypePTR, false))
+	if len(resp.Answer) != 1 || resp.Answer[0].(*dns.PTR).Ptr != "laptop.lan." {
+		t.Errorf("PTR: %v", resp)
+	}
+	// PTR адреса без аренды — как раньше, bogus-priv.
+	if resp := p.handle(writer{remote: lanUDP}, query("99.3.168.192.in-addr.arpa", dns.TypePTR, false)); resp.Rcode != dns.RcodeNameError {
+		t.Errorf("PTR без аренды: %d", resp.Rcode)
+	}
+	if n := len(up.requests()); n != 0 {
+		t.Errorf("локальная зона не должна уходить в upstream: %d запросов", n)
+	}
+	// Остальное — как обычно.
+	p.handle(writer{remote: lanUDP}, query("direct.example", dns.TypeA, false))
+	if n := len(up.requests()); n != 1 {
+		t.Errorf("обычный домен должен уйти в upstream: %d", n)
+	}
+}

@@ -26,6 +26,7 @@ func runDaemon() int {
 	err := daemon.Run(context.Background(), daemon.Options{
 		ConfigDir: env.ConfigDir,
 		ProcRoot:  env.ProcRoot,
+		StateDir:  env.StateDir,
 		Log:       log,
 	})
 	if err != nil {

@@ -11,6 +11,8 @@ Type=notify-reload
 ExecStart=/usr/local/bin/routerd run
 Restart=on-failure
 RestartSec=3
+# /var/lib/routerd — аренды DHCP (leases.json).
+StateDirectory=routerd
 
 # Права: root нужен для управления юнитами по D-Bus, остальное урезано.
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW

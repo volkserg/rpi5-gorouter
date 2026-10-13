@@ -2,9 +2,12 @@ package cli
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/volkserg/rpi5-gorouter/internal/config"
+	"github.com/volkserg/rpi5-gorouter/internal/dhcp"
 	"github.com/volkserg/rpi5-gorouter/internal/lists"
 	"github.com/volkserg/rpi5-gorouter/internal/services"
 	"github.com/volkserg/rpi5-gorouter/internal/sysinfo"
@@ -150,7 +153,33 @@ func cmdStatus(x *ctx, _ []string) int {
 
 	x.out("%sDHCP:%s", x.c.Yellow, x.c.NC)
 	x.out("  :67    routerd        %s", listen(false, true, 67))
+	x.leases()
 	return 0
+}
+
+// leases печатает действующие аренды (как список аренд Kea в bash-версии).
+func (x *ctx) leases() {
+	path := filepath.Join(x.StateDir, dhcp.LeaseFile)
+	all, err := dhcp.LoadLeases(path)
+	if err != nil {
+		x.out("  Аренды: ошибка чтения %s: %v", path, err)
+		return
+	}
+	now := time.Now()
+	var active []dhcp.Lease
+	for _, l := range all {
+		if l.State == dhcp.StateBound && l.Expires.After(now) {
+			active = append(active, l)
+		}
+	}
+	x.out("  Активные аренды: %d", len(active))
+	for _, l := range active {
+		name := l.Name
+		if name == "" {
+			name = "-"
+		}
+		x.out("    %-15s %-17s %-20s до %s", l.IP, l.MAC, name, l.Expires.Local().Format("02.01 15:04"))
+	}
 }
 
 func (x *ctx) unitLine(st services.State) {

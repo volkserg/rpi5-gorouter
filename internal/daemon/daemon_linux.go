@@ -1,7 +1,7 @@
 //go:build linux
 
 // Package daemon — долгоживущий процесс routerd (routerd run): применяет
-// sysctl, правила nftables и policy routing, обслуживает DNS на :53,
+// sysctl, правила nftables и policy routing, обслуживает DNS на :53 и DHCP,
 // перечитывает конфиги по SIGHUP и убирает за собой правила при остановке.
 package daemon
 
@@ -25,6 +25,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/volkserg/rpi5-gorouter/internal/config"
+	"github.com/volkserg/rpi5-gorouter/internal/dhcp"
 	"github.com/volkserg/rpi5-gorouter/internal/dnsproxy"
 	"github.com/volkserg/rpi5-gorouter/internal/domain"
 	"github.com/volkserg/rpi5-gorouter/internal/firewall"
@@ -41,7 +42,9 @@ const healthInterval = 2 * time.Second
 type Options struct {
 	ConfigDir string
 	ProcRoot  string
-	Log       *slog.Logger
+	// StateDir — каталог состояния (аренды DHCP).
+	StateDir string
+	Log      *slog.Logger
 }
 
 type daemon struct {
@@ -52,6 +55,11 @@ type daemon struct {
 	dns *dnsproxy.Server
 	// listen — адреса, на которых сейчас слушает dns.
 	listen []netip.AddrPort
+
+	pool      *dhcp.Pool
+	zone      *dhcp.Zone
+	dhcpSrv   *dhcp.Server
+	dhcpIface string
 
 	// Состояние после последнего успешного apply.
 	cfg     *config.Config
@@ -186,6 +194,9 @@ func (d *daemon) apply() error {
 		return err
 	}
 
+	if err := d.syncDHCP(cfg); err != nil {
+		return err
+	}
 	if err := d.syncDNS(cfg, entries, overrides, recreated); err != nil {
 		return err
 	}
@@ -307,6 +318,9 @@ func (d *daemon) syncDNS(cfg *config.Config, entries []lists.Entry, overrides []
 		FilterAAAA: cfg.FilterAAAA,
 		ECS:        cfg.DNSECS,
 	}
+	if d.zone != nil {
+		rules.Local = d.zone
+	}
 
 	// Как dnsmasq с interface=eth0: адрес LAN и loopback (на нём резолвит GOST).
 	listen := []netip.AddrPort{
@@ -329,8 +343,77 @@ func (d *daemon) syncDNS(cfg *config.Config, entries []lists.Entry, overrides []
 	return nil
 }
 
-// cleanup останавливает DNS и убирает правила routerd (как stop в bash-версии).
+// syncDHCP приводит DHCP-сервер к конфигу: пул перенастраивается на лету,
+// сокет пересоздаётся, только если сменился интерфейс.
+func (d *daemon) syncDHCP(cfg *config.Config) error {
+	if !cfg.DHCPEnabled {
+		if d.dhcpSrv != nil {
+			_ = d.dhcpSrv.Close()
+			d.dhcpSrv, d.dhcpIface = nil, ""
+			d.Log.Info("DHCP выключен (DHCP_ENABLED=no)")
+		}
+		d.zone = nil
+		return nil
+	}
+	poolCfg := dhcp.PoolConfig{
+		Subnet:    cfg.LANSubnet,
+		Start:     cfg.PoolStart,
+		End:       cfg.PoolEnd,
+		Reserved:  []netip.Addr{cfg.RPi5IP, cfg.RouterIP},
+		LeaseTime: cfg.DHCPLeaseTime,
+		OfferTime: time.Minute,
+	}
+	if d.pool == nil {
+		path := filepath.Join(d.StateDir, dhcp.LeaseFile)
+		leases, err := dhcp.LoadLeases(path)
+		if err != nil {
+			// Испорченный файл не должен оставлять LAN без DHCP: начинаем с
+			// пустой базы — «терпимый authoritative» режим подтвердит клиентам их адреса.
+			d.Log.Error("аренды DHCP не прочитаны, начинаю с пустой базы", "файл", path, "ошибка", err)
+		}
+		d.pool = dhcp.NewPool(poolCfg, leases, dhcp.NeighProber{H: d.nl, Iface: cfg.Iface})
+		d.pool.OnChange(func(ls []dhcp.Lease) {
+			if err := dhcp.SaveLeases(path, ls); err != nil {
+				d.Log.Error("сохранение аренд DHCP", "ошибка", err)
+			}
+		})
+	} else {
+		d.pool.Reconfigure(poolCfg)
+	}
+	d.zone = dhcp.NewZone(d.pool, cfg.LocalDomain)
+
+	h := &dhcp.Handler{
+		Pool: d.pool,
+		Log:  d.Log,
+		Opts: dhcp.Options{
+			ServerIP:  cfg.RPi5IP,
+			Netmask:   cfg.Netmask(),
+			Broadcast: cfg.Broadcast(),
+			Domain:    cfg.LocalDomain,
+			LeaseTime: cfg.DHCPLeaseTime,
+		},
+	}
+	if d.dhcpSrv != nil && d.dhcpIface == cfg.Iface {
+		d.dhcpSrv.SetHandler(h)
+		return nil
+	}
+	if d.dhcpSrv != nil {
+		_ = d.dhcpSrv.Close()
+		d.dhcpSrv = nil
+	}
+	srv, err := dhcp.Listen(cfg.Iface, h, d.Log)
+	if err != nil {
+		return err
+	}
+	d.dhcpSrv, d.dhcpIface = srv, cfg.Iface
+	return nil
+}
+
+// cleanup останавливает DHCP и DNS и убирает правила routerd (как stop в bash-версии).
 func (d *daemon) cleanup() {
+	if d.dhcpSrv != nil {
+		_ = d.dhcpSrv.Close()
+	}
 	if d.dns != nil {
 		d.dns.Shutdown()
 	}
