@@ -47,10 +47,19 @@ Ansible-роль (ниже) или `install.sh` из архива.
 
 ### install.sh
 
+На RPi с доступом в интернет — архив релиза ([список релизов](https://github.com/volkserg/rpi5-gorouter/releases)),
+проверка по `SHA256SUMS`, установка:
+
 ```bash
-scp dist/routerd-*-linux-arm64.tar.gz pi@rpi:
-ssh pi@rpi 'tar -xzf routerd-*-linux-arm64.tar.gz && cd routerd-*-linux-arm64 && sudo ./install.sh'
+V=v0.2.0
+curl -fLO https://github.com/volkserg/rpi5-gorouter/releases/download/$V/routerd-$V-linux-arm64.tar.gz
+curl -fLO https://github.com/volkserg/rpi5-gorouter/releases/download/$V/SHA256SUMS
+sha256sum -c SHA256SUMS
+tar -xzf routerd-$V-linux-arm64.tar.gz
+cd routerd-$V-linux-arm64 && sudo ./install.sh
 ```
+
+Обновление — то же самое с новой версией в `V`.
 
 `install.sh` ставит недостающее — dnscrypt-proxy (apt) и Pi-hole (официальный
 установщик, сразу на порту 5353) — и сам routerd: бинарник, команды `rsc` и `router_service_ctl`,
@@ -90,6 +99,46 @@ routerd подхватывает туннель сам за пару секун�
 
 Все ключи `router.conf` с описанием и значениями по умолчанию —
 [deploy/config/router.conf](deploy/config/router.conf).
+
+## Файлы и списки
+
+| Файл на RPi | Что это |
+|---|---|
+| `/usr/local/etc/router_service/router.conf` | настройки routerd ([все ключи](deploy/config/router.conf)) |
+| `/usr/local/etc/router_service/vpn_domains.txt` | домены, IP и подсети, трафик к которым идёт в туннель |
+| `/usr/local/etc/router_service/dns_override.txt` | домены со своим DNS-сервером: `домен сервер[:порт]` |
+| `/var/lib/routerd/leases.json` | аренды DHCP (ведёт routerd) |
+| `/etc/pihole/pihole.toml` | конфиг Pi-hole; routerd сверяет в нём только ключи цепочки DNS |
+| `/etc/systemd/system/routerd.service` | юнит routerd |
+| `/etc/systemd/system/dnscrypt-proxy.socket.d/routerd.conf` | адрес dnscrypt-proxy (`DNSCRYPT_ADDR`) |
+| юнит клиента туннеля (`VPN_SERVICE`) и его конфиг | ставятся вручную — [docs/TUNNEL.md](docs/TUNNEL.md) |
+
+Списки ведутся одним из двух способов — не смешивайте: файл, которым
+управляет роль Ansible, перезаписывается при каждом её запуске.
+
+**На RPi** — роль списки не трогает (переменные списков не заданы):
+
+```bash
+rsc list-vpn-domains
+sudo rsc add-vpn-domain corp.example.com      # remove-vpn-domain — удалить
+sudo rsc add-vpn-ip 10.20.0.0/16              # remove-vpn-ip — удалить
+sudo rsc load-vpn-domains domains.txt         # добавить домены из файла
+sudo rsc load-vpn-ips ips.txt                 # добавить IP и подсети из файла
+```
+
+Изменения применяются сразу, без перезапуска. `dns_override.txt` правится
+вручную, затем `sudo rsc check-config && sudo rsc reload-vpn-domains`.
+Файл можно проверить и до замены: `rsc check-config --vpn-file <файл>`
+(`--override-file`, `--router-conf` — для остальных).
+
+**В инвентаре Ansible** — файл целиком строится ролью:
+
+- `routerd_vpn_file`, `routerd_dns_override_file` — готовые файлы рядом с
+  инвентарём, копируются как есть;
+- `routerd_vpn_entries`, `routerd_dns_overrides` — записи прямо в переменных.
+
+Роль проверяет каждый файл до записи (`rsc check-config`): файл с ошибкой на
+RPi не попадёт, и routerd продолжит работать с прежним.
 
 ## Использование
 

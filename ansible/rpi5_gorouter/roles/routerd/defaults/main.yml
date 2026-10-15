@@ -1,6 +1,6 @@
 ---
 # Версия routerd = релиз на GitHub (тег v<версия>).
-routerd_version: "0.1.0"
+routerd_version: "0.2.0"
 routerd_release_base: "https://github.com/volkserg/rpi5-gorouter/releases/download"
 # Архив routerd-*-linux-arm64.tar.gz с машины, где запускается Ansible
 # (make dist) — вместо релиза. Пусто — релиз routerd_version.
@@ -14,10 +14,17 @@ routerd_cache_dir: /var/cache/routerd
 # значения по умолчанию routerd. Файл целиком управляется ролью.
 routerd_conf: {}
 
-# Записи vpn_domains.txt (домены, IP, подсети) и dns_override.txt
-# ({domain, server}). null — файл не управляется ролью (правки через rsc).
+# Списки vpn_domains.txt (домены, IP, подсети) и dns_override.txt
+# (домен сервер[:порт]) — одним из способов:
+#   routerd_vpn_entries / routerd_dns_overrides — записи в инвентаре
+#     ({domain, server} для dns_override);
+#   routerd_vpn_file / routerd_dns_override_file — готовый файл с машины
+#     Ansible, копируется как есть.
+# Оба null — файл не управляется ролью (правки на RPi через rsc).
 routerd_vpn_entries: null
 routerd_dns_overrides: null
+routerd_vpn_file: null
+routerd_dns_override_file: null
 
 # Pi-hole (официальный установщик) и dnscrypt-proxy (apt) — если их нет.
 # Клиент туннеля (GOST, gost-run.service) роль не ставит и не настраивает.

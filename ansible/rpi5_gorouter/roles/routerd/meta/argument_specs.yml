@@ -18,6 +18,8 @@ argument_specs:
         options:
           domain: {type: str, required: true}
           server: {type: str, required: true}
+      routerd_vpn_file: {type: path, description: Файл vpn_domains.txt с машины Ansible}
+      routerd_dns_override_file: {type: path, description: Файл dns_override.txt с машины Ansible}
       routerd_install_deps: {type: bool, description: Ставить Pi-hole и dnscrypt-proxy}
       routerd_apply_network: {type: bool, description: Применять адрес RPi в NetworkManager}
       routerd_start: {type: bool, description: Включать и запускать сервисы}

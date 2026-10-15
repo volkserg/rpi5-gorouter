@@ -22,7 +22,13 @@ func Completion(w io.Writer, shell string) error {
 		names = append(names, c.name)
 		described = append(described, fmt.Sprintf("'%s:%s'", c.name, c.help))
 		if strings.HasPrefix(c.args, "[--") {
-			flags[c.name] = strings.ReplaceAll(strings.Trim(c.args, "[]"), "|", " ")
+			var fl []string
+			for _, w := range strings.Fields(strings.NewReplacer("[", " ", "]", " ", "|", " ").Replace(c.args)) {
+				if strings.HasPrefix(w, "--") {
+					fl = append(fl, w)
+				}
+			}
+			flags[c.name] = strings.Join(fl, " ")
 		}
 	}
 	names = append(names, "help")

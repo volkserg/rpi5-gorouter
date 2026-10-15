@@ -10,6 +10,7 @@
     src: router.conf.j2
     dest: "{{ routerd_config_dir }}/router.conf"
     mode: "0644"
+    validate: "{{ routerd_bin_dir }}/rsc check-config --router-conf %s"
     backup: true
   notify: reload routerd
 
@@ -18,6 +19,7 @@
     src: vpn_domains.txt.j2
     dest: "{{ routerd_config_dir }}/vpn_domains.txt"
     mode: "0644"
+    validate: "{{ routerd_bin_dir }}/rsc check-config --vpn-file %s"
   when: routerd_vpn_entries is not none
   notify: reload routerd
 
@@ -26,10 +28,31 @@
     src: dns_override.txt.j2
     dest: "{{ routerd_config_dir }}/dns_override.txt"
     mode: "0644"
+    validate: "{{ routerd_bin_dir }}/rsc check-config --override-file %s"
   when: routerd_dns_overrides is not none
   notify: reload routerd
 
-# Ошибка в конфиге останавливает роль до перезапуска routerd.
+- name: Файл vpn_domains.txt с машины Ansible
+  ansible.builtin.copy:
+    src: "{{ routerd_vpn_file }}"
+    dest: "{{ routerd_config_dir }}/vpn_domains.txt"
+    mode: "0644"
+    validate: "{{ routerd_bin_dir }}/rsc check-config --vpn-file %s"
+  when: routerd_vpn_file is not none
+  notify: reload routerd
+
+- name: Файл dns_override.txt с машины Ansible
+  ansible.builtin.copy:
+    src: "{{ routerd_dns_override_file }}"
+    dest: "{{ routerd_config_dir }}/dns_override.txt"
+    mode: "0644"
+    validate: "{{ routerd_bin_dir }}/rsc check-config --override-file %s"
+  when: routerd_dns_override_file is not none
+  notify: reload routerd
+
+# Каждый файл проверяется до записи (validate); здесь — всё вместе, в том
+# числе файлы, которые роль не ведёт. Ошибка останавливает роль до
+# перезапуска routerd.
 - name: Проверка конфигов (rsc check-config)
   ansible.builtin.command: "{{ routerd_bin_dir }}/rsc check-config"
   environment:

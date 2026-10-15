@@ -1024,6 +1024,30 @@ cmd_test_all() {
     log_info "Все режимы пройдены."
 }
 
+# ansible_lists_from_files <режим> — списки из файлов с машины Ansible:
+# копируются как есть, файл с ошибкой отклоняется до записи.
+ansible_lists_from_files() {
+    local d out vpn="${CONFIG_DIR}/vpn_domains.txt" sum
+    d="$(mktemp -d)"
+    printf '# список из файла\nvpn.example\n' >"${d}/vpn.txt"
+    printf 'corp.example 203.0.113.53\n' >"${d}/override.txt"
+    printf 'vpn.example\n999.1.1.1\n' >"${d}/bad.txt"
+    local files='{"routerd_vpn_entries": null, "routerd_dns_overrides": null}'
+    out="$(play "$1" -e "${files}" -e "routerd_vpn_file=${d}/vpn.txt" -e "routerd_dns_override_file=${d}/override.txt")"
+    expect "списки из файлов: роль отработала" eq "$(recap failed "${out}")" 0 ||
+        echo "${out}" | grep -E 'fatal|FAILED' | head -3
+    expect "vpn_domains.txt — копия файла" cmp -s "${d}/vpn.txt" "${vpn}"
+    expect "dns_override.txt — копия файла" cmp -s "${d}/override.txt" "${CONFIG_DIR}/dns_override.txt"
+    sum="$(sha256sum <"${vpn}")"
+    out="$(play "$1" -e "${files}" -e "routerd_vpn_file=${d}/bad.txt")" || true
+    expect "файл с ошибкой отклонён до записи" eq "$(recap failed "${out}")" 1
+    expect "в ошибке — неверная строка файла" grep -q '999.1.1.1' <<<"${out}"
+    expect "vpn_domains.txt на RPi не изменился" eq "$(sha256sum <"${vpn}")" "${sum}"
+    out="$(play "$1" -e "routerd_vpn_file=${d}/vpn.txt")" || true
+    expect "список и файл одновременно — отказ" grep -q 'либо routerd_vpn_entries, либо routerd_vpn_file' <<<"${out}"
+    rm -rf "${d}"
+}
+
 #===============================================================================
 # test-ansible: роль volkserg.rpi5_gorouter.routerd во всех режимах
 #===============================================================================
@@ -1044,10 +1068,13 @@ cmd_test_ansible() {
     # юнит стенда под режим, как его ставят вручную.
     in_ns routerd rpi
 
+    # play <режим> [параметры ansible-playbook…]
     play() {
+        local m=$1
+        shift
         ANSIBLE_COLLECTIONS_PATH="${coll}" ANSIBLE_NOCOLOR=1 ANSIBLE_STDOUT_CALLBACK=default \
             ansible-playbook -i localhost, "${LAB_DIR}/ansible/site.yml" \
-            -e "lab_archive=${archive}" -e "lab_mode=$1" 2>&1
+            -e "lab_archive=${archive}" -e "lab_mode=${m}" "$@" 2>&1
     }
     recap() { grep -oE "$1=[0-9]+" <<<"$2" | head -1 | cut -d= -f2; }
 
@@ -1057,7 +1084,7 @@ cmd_test_ansible() {
         gost_client "${mode}"
         systemctl daemon-reload
         systemctl restart gost-run
-        out="$(play "${mode}")"
+        out="$(play "${mode}")" || true
         expect "роль отработала без ошибок" eq "$(recap failed "${out}") $(recap unreachable "${out}")" "0 0" ||
             echo "${out}" | grep -E 'FAILED|fatal|ERROR' | head -5
         if [[ ${first} -eq 1 ]]; then
@@ -1065,6 +1092,7 @@ cmd_test_ansible() {
             out="$(play "${mode}")"
             expect "повторный запуск ничего не меняет" eq "$(recap changed "${out}")" 0 ||
                 echo "${out}" | grep -B1 '^changed:' | head -10
+            ansible_lists_from_files "${mode}"
         fi
         expect "rsc и router_service_ctl → routerd" \
             eq "$(readlink /usr/local/bin/rsc) $(readlink /usr/local/bin/router_service_ctl)" "routerd routerd"

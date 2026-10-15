@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"unicode/utf8"
 
 	"github.com/volkserg/rpi5-gorouter/internal/config"
 	"github.com/volkserg/rpi5-gorouter/internal/dhcp"
@@ -97,7 +98,7 @@ var commands = []command{
 	{"restart", "", "Перезапустить все компоненты", cmdRestart},
 	{"apply-network", "[--dry-run|--confirm|--rollback]", "Применить сеть из router.conf (NetworkManager)", cmdApplyNetwork},
 	{"logs", "", "Показать логи", cmdLogs},
-	{"check-config", "", "Проверить router.conf и списки на ошибки", cmdCheckConfig},
+	{"check-config", "[--router-conf|--vpn-file|--override-file <файл>]", "Проверить router.conf и списки (или отдельный файл)", cmdCheckConfig},
 	{},
 	{"add-vpn-domain", "<domain>", "Добавить домен для VPN", cmdAddDomain},
 	{"remove-vpn-domain", "<domain>", "Удалить домен из VPN", cmdRemoveDomain},
@@ -181,12 +182,27 @@ func (x *ctx) usage() {
 	x.out("Использование: %s <команда> [аргументы]", x.Prog)
 	x.out("")
 	x.out("Команды:")
+	// Колонка описаний — по самой длинной строке до maxWidth; более длинные
+	// строки команд переносят описание на следующую строку.
+	const maxWidth = 50
+	width := 0
+	for _, c := range commands {
+		if n := utf8.RuneCountInString(c.name+" "+c.args) + 2; n <= maxWidth {
+			width = max(width, n)
+		}
+	}
 	for _, c := range commands {
 		if c.name == "" {
 			x.out("")
 			continue
 		}
-		x.out("  %-26s%s", c.name+" "+c.args, c.help)
+		cmd := c.name + " " + c.args
+		if utf8.RuneCountInString(cmd)+2 > width {
+			x.out("  %s", cmd)
+			x.out("  %*s%s", width, "", c.help)
+			continue
+		}
+		x.out("  %-*s%s", width, cmd, c.help)
 	}
 }
 

@@ -8,6 +8,14 @@
     fail_msg: "routerd собирается под linux/arm64 и работает под systemd"
     quiet: true
 
+- name: Список задан одним способом
+  ansible.builtin.assert:
+    that:
+      - routerd_vpn_entries is none or routerd_vpn_file is none
+      - routerd_dns_overrides is none or routerd_dns_override_file is none
+    fail_msg: "задайте либо routerd_vpn_entries, либо routerd_vpn_file (и так же для dns_override)"
+    quiet: true
+
 - name: Имена команд управления
   ansible.builtin.stat:
     path: "{{ routerd_bin_dir }}/{{ item }}"

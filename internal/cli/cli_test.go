@@ -140,3 +140,23 @@ func TestCheckConfig(t *testing.T) {
 		t.Errorf("ожидались ошибки во всех трёх файлах:\n%s", out)
 	}
 }
+
+// Отдельные файлы — до замены (validate в роли Ansible).
+func TestCheckConfigFiles(t *testing.T) {
+	dir := t.TempDir()
+	good, bad := filepath.Join(dir, "good.txt"), filepath.Join(dir, "bad.txt")
+	os.WriteFile(good, []byte("intranet.com\n10.0.0.0/8\n"), 0o644)
+	os.WriteFile(bad, []byte("999.1.1.1\n"), 0o644)
+	if out, _, code := run(t, dir, "check-config", "--vpn-file", good); code != 0 || strings.Count(out, "✓") != 1 {
+		t.Errorf("good: code=%d\n%s", code, out)
+	}
+	if out, _, code := run(t, dir, "check-config", "--vpn-file", bad); code != 1 || !strings.Contains(out, "строка 1") {
+		t.Errorf("bad: code=%d\n%s", code, out)
+	}
+	if _, _, code := run(t, dir, "check-config", "--override-file"); code != 1 {
+		t.Error("без пути — ошибка")
+	}
+	if _, _, code := run(t, dir, "check-config", "--what", good); code != 1 {
+		t.Error("неизвестный флаг — ошибка")
+	}
+}

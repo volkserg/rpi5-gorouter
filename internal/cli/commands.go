@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -116,9 +117,35 @@ func cmdListVPN(x *ctx, _ []string) int {
 }
 
 // cmdCheckConfig — новая команда: проверка всех конфигов без применения.
-func cmdCheckConfig(x *ctx, _ []string) int {
+// cmdCheckConfig проверяет конфиги в каталоге или, с флагами, отдельные
+// файлы (например, перед заменой: роль Ansible проверяет так файл до записи).
+func cmdCheckConfig(x *ctx, args []string) int {
+	files := map[string]string{}
+	for i := 0; i < len(args); i += 2 {
+		switch args[i] {
+		case "--router-conf", "--vpn-file", "--override-file":
+			if i+1 >= len(args) {
+				x.errf("Ошибка: после %s нужен путь к файлу", args[i])
+				return 1
+			}
+			files[args[i]] = args[i+1]
+		default:
+			x.errf("Неизвестный параметр: %s", args[i])
+			x.out("Использование: %s check-config [--router-conf <файл>] [--vpn-file <файл>] [--override-file <файл>]", x.Prog)
+			return 1
+		}
+	}
+	routerConf, vpnFile, overrideFile := x.routerConf(), x.vpnFile(), x.overrideFile()
+	if len(files) > 0 {
+		routerConf, vpnFile, overrideFile = files["--router-conf"], files["--vpn-file"], files["--override-file"]
+	}
+
 	failed := false
-	report := func(name string, errs []string) {
+	report := func(path string, errs []string) {
+		name := path
+		if len(files) == 0 {
+			name = filepath.Base(path)
+		}
 		if len(errs) == 0 {
 			x.out("  %s✓%s %s", x.c.Green, x.c.NC, name)
 			return
@@ -130,37 +157,47 @@ func cmdCheckConfig(x *ctx, _ []string) int {
 		}
 	}
 
-	x.out("%sПроверка конфигов в %s:%s", x.c.Yellow, x.ConfigDir, x.c.NC)
-
-	_, warns, err := config.Load(x.routerConf())
-	var errs []string
-	if err != nil {
-		errs = strings.Split(err.Error(), "\n")
-	}
-	report(config.FileName, errs)
-	for _, w := range warns {
-		x.out("      %sпредупреждение:%s %s", x.c.Yellow, x.c.NC, w)
-	}
-
-	errs = nil
-	if l, _, err := lists.ReadVPN(x.vpnFile()); err != nil {
-		errs = append(errs, err.Error())
+	if len(files) == 0 {
+		x.out("%sПроверка конфигов в %s:%s", x.c.Yellow, x.ConfigDir, x.c.NC)
 	} else {
-		for _, ln := range l.Invalid() {
-			errs = append(errs, "строка "+strconv.Itoa(ln.Num)+": "+ln.Err.Error())
+		x.out("%sПроверка файлов:%s", x.c.Yellow, x.c.NC)
+	}
+
+	if routerConf != "" {
+		_, warns, err := config.Load(routerConf)
+		var errs []string
+		if err != nil {
+			errs = strings.Split(err.Error(), "\n")
+		}
+		report(routerConf, errs)
+		for _, w := range warns {
+			x.out("      %sпредупреждение:%s %s", x.c.Yellow, x.c.NC, w)
 		}
 	}
-	report(lists.VPNFileName, errs)
 
-	errs = nil
-	if _, bad, err := lists.ReadOverrides(x.overrideFile()); err != nil {
-		errs = append(errs, err.Error())
-	} else {
-		for _, b := range bad {
-			errs = append(errs, b.Error())
+	if vpnFile != "" {
+		var errs []string
+		if l, _, err := lists.ReadVPN(vpnFile); err != nil {
+			errs = append(errs, err.Error())
+		} else {
+			for _, ln := range l.Invalid() {
+				errs = append(errs, "строка "+strconv.Itoa(ln.Num)+": "+ln.Err.Error())
+			}
 		}
+		report(vpnFile, errs)
 	}
-	report(lists.OverrideFileName, errs)
+
+	if overrideFile != "" {
+		var errs []string
+		if _, bad, err := lists.ReadOverrides(overrideFile); err != nil {
+			errs = append(errs, err.Error())
+		} else {
+			for _, b := range bad {
+				errs = append(errs, b.Error())
+			}
+		}
+		report(overrideFile, errs)
+	}
 
 	if failed {
 		return 1
