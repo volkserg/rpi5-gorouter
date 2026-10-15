@@ -217,6 +217,23 @@ testbed/              стенд: lab.sh, эталон ядра RPi, конфи�
 Юнит-тесты — всё, что не трогает ядро (работают на macOS и Linux).
 Linux-специфичное — под `//go:build linux`, проверяется на стенде.
 
+## Файлы на RPi
+
+| Файл | Что это |
+|---|---|
+| `/usr/local/etc/router_service/` | `router.conf`, `vpn_domains.txt`, `dns_override.txt`; каталог переопределяется `ROUTERD_CONFIG_DIR` (стенд, отладка) |
+| `/var/lib/routerd/leases.json` | аренды DHCP |
+| `/etc/pihole/pihole.toml` | конфиг Pi-hole; routerd сверяет в нём только ключи цепочки DNS |
+| `/etc/systemd/system/routerd.service` | юнит routerd |
+| `/etc/systemd/system/dnscrypt-proxy.socket.d/routerd.conf` | адрес dnscrypt-proxy (`DNSCRYPT_ADDR`) |
+| `/usr/local/bin/routerd`, `rsc`, `router_service_ctl` | бинарник и symlink'и на него |
+
+Порядок запуска (`rsc start`): `dnscrypt-proxy.socket` → `dnscrypt-proxy` →
+`pihole-FTL` → `routerd` → клиент туннеля (`VPN_SERVICE`); не установленные
+юниты пропускаются. `rsc stop` останавливает клиент туннеля и routerd. `rsc
+logs` — единственное место, где routerd вызывает внешнюю программу
+(`journalctl`). Автодополнение генерирует бинарник: `routerd completion bash|zsh`.
+
 ## Тестовый стенд
 
 Одна Linux-машина arm64 (Debian 13; на Mac — VM OrbStack, на Linux — VM или
