@@ -1,5 +1,5 @@
 // Package sysinfo читает состояние системы из /proc для команды status
-// (вместо ss и cat). Корень /proc подменяется в тестах.
+// (по аналогии с ss). Корень /proc подменяется в тестах.
 package sysinfo
 
 import (

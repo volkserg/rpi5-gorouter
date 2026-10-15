@@ -99,7 +99,7 @@ func (h *Handler) reply(req *dhcpv4.DHCPv4, mt dhcpv4.MessageType, yiaddr netip.
 		mods = append(mods, dhcpv4.WithOption(dhcpv4.OptDomainName(o.Domain)))
 	}
 	if lease {
-		// T1/T2 — как было в Kea: 1/2 и 7/8 срока аренды.
+		// T1/T2 — 1/2 и 7/8 срока аренды (рекомендация RFC 2131).
 		mods = append(mods,
 			dhcpv4.WithYourIP(ip(yiaddr)),
 			dhcpv4.WithOption(dhcpv4.OptIPAddressLeaseTime(o.LeaseTime)),

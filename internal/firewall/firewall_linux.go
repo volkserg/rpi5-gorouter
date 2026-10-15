@@ -61,7 +61,7 @@ func setsCompatible(c *nftables.Conn, s Spec) bool {
 	return static && dynamic
 }
 
-// Remove удаляет таблицу router_service (аналог очистки правил в stop bash-версии).
+// Remove удаляет таблицу router_service со всеми правилами и set'ами.
 func Remove(c *nftables.Conn) error {
 	if !tableExists(c) {
 		return nil

@@ -31,8 +31,7 @@ type LineError struct {
 func (e LineError) Error() string { return fmt.Sprintf("строка %d: %v", e.Line, e.Err) }
 
 // ParseOverrides разбирает dns_override.txt: «domain upstream[:port]».
-// Порт принимается и через '#' (синтаксис dnsmasq), т.к. документированная
-// форма с ':' в bash-версии на самом деле не работала. Несколько строк
+// Порт задаётся через ':' или '#' (синтаксис dnsmasq). Несколько строк
 // с одним доменом задают несколько upstream — как server= в dnsmasq.
 func ParseOverrides(r io.Reader) ([]Override, []LineError, error) {
 	var out []Override

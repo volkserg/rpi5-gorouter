@@ -1,4 +1,4 @@
-// Package dhcp — DHCP-сервер routerd (замена Kea): пул адресов с арендами,
+// Package dhcp — DHCP-сервер routerd: пул адресов с арендами,
 // «терпимый authoritative» режим, сохранение аренд в JSON, имена клиентов
 // для локальной DNS-зоны (*.lan).
 package dhcp

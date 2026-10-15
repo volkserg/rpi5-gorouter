@@ -1,4 +1,4 @@
-// Package dnsproxy — DNS-прокси routerd на :53 (замена dnsmasq): форвардит
+// Package dnsproxy — DNS-прокси routerd на :53: форвардит
 // запросы клиентов в Pi-hole, отдельные домены — в свои upstream
 // (dns_override.txt), а адреса доменов из списка VPN сообщает в nft-set
 // с учётом TTL. Кэша нет: кэширует Pi-hole.
@@ -428,7 +428,7 @@ func reply(req *dns.Msg, rcode int) *dns.Msg {
 }
 
 // privateReverse — обратные зоны частных и служебных сетей (RFC 6303),
-// которые dnsmasq с bogus-priv не отправлял наружу.
+// которые не отправляются наружу (как bogus-priv в dnsmasq).
 var privateReverse = func() *domain.Matcher[struct{}] {
 	m := domain.NewMatcher[struct{}]()
 	zones := []string{

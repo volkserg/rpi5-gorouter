@@ -217,7 +217,7 @@ func cmdStatus(x *ctx, _ []string) int {
 	return 0
 }
 
-// leases печатает действующие аренды (как список аренд Kea в bash-версии).
+// leases печатает действующие аренды DHCP.
 func (x *ctx) leases() {
 	path := filepath.Join(x.StateDir, dhcp.LeaseFile)
 	all, err := dhcp.LoadLeases(path)

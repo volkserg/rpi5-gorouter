@@ -2,8 +2,8 @@
 // из списков в туннель (redirect / tproxy / route), отклонение QUIC.
 // Работает через netlink (google/nftables), без вызова nft/iptables/ipset.
 //
-// Всё живёт в собственной таблице `ip router_service`; чужие таблицы
-// (iptables-nft, Docker, …) не трогаются. Применение правил — только Linux
+// Всё живёт в собственной таблице `ip router_service`; таблицы других
+// программ не трогаются. Применение правил — только Linux
 // (firewall_linux.go); Spec и подготовка диапазонов собираются везде.
 package firewall
 

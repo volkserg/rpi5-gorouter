@@ -1,5 +1,5 @@
-// Package sysctl выставляет параметры ядра записью в /proc/sys (вместо
-// sysctl -w). Для net.* достаточно CAP_NET_ADMIN в сетевом namespace.
+// Package sysctl выставляет параметры ядра записью в /proc/sys (по аналогии
+// с sysctl -w). Для net.* достаточно CAP_NET_ADMIN в сетевом namespace.
 package sysctl
 
 import (
@@ -20,7 +20,7 @@ type Setting struct {
 //
 // send_redirects ядро объединяет по OR для all и интерфейса, поэтому его
 // нужно выключить в обоих местах: иначе RPi рассылает клиентам ICMP redirect
-// «идите напрямую на роутер» (так было в bash-версии).
+// «идите напрямую на роутер».
 func Router(iface string) []Setting {
 	return []Setting{
 		{"net.ipv4.ip_forward", "1"},

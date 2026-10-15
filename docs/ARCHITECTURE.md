@@ -1,38 +1,38 @@
-# routerd — архитектура и план миграции
+# routerd — архитектура
 
-Go-замена собственной логики bash-проекта rpi5-router:
 Raspberry Pi 5 с одним портом `eth0` в одной L2-сети с домашним роутером —
 шлюз, DHCP и DNS для LAN, NAT и выборочная маршрутизация трафика к заданным
 доменам и подсетям через VPN-туннель (например, к корпоративной сети).
 
-Цель: в рабочем режиме не вызывать внешние утилиты (iptables, ipset, nmcli,
-systemctl, sed…). Единственное исключение — `journalctl` в команде `logs`.
+Принцип: в рабочем режиме routerd не вызывает внешние утилиты — ядро, systemd
+и NetworkManager управляются напрямую (netlink, D-Bus, `/proc`). Единственное
+исключение — `journalctl` в команде `logs`.
 
-## Совместимость
-
-Сохраняются: порты, цепочка DNS, форматы `router.conf`, `vpn_domains.txt`,
-`dns_override.txt`, команды `router_service_ctl` (symlink на `routerd`).
+## Потоки трафика
 
 ```
-Клиент → routerd DNS (:53) → Pi-hole (:5353) → dnscrypt-proxy (:5053, DoH) → Cloudflare
+Клиент → routerd DNS (:53) → Pi-hole (:5353) → dnscrypt-proxy (:5053, DoH) → DoH-сервер
 TCP к VPN-адресам → nft REDIRECT :1080 → GOST (конфиг ведёт пользователь) → туннель
 UDP/443 к VPN-адресам → REJECT icmp port-unreachable (браузер уходит с QUIC на TCP)
 ```
 
-## Что заменяется
+Интерфейсы: `router.conf`, `vpn_domains.txt`, `dns_override.txt` в
+`/usr/local/etc/router_service`, команды `router_service_ctl` (symlink на `routerd`).
 
-| Сейчас | routerd |
+## Компоненты
+
+| Задача | Реализация |
 |---|---|
-| `source router.conf` | `internal/config`: безопасный разбор KEY=VALUE, валидация, netmask/broadcast |
-| Kea DHCP4 | `insomniacslk/dhcp` + свой менеджер аренд (JSON-снапшот) |
-| dnsmasq (ipset=, server=, bogus-priv) | DNS-прокси на `miekg/dns`; промежуточно — dnsmasq с `nftset=` |
-| iptables + ipset | `google/nftables`, своя таблица `router_service` |
-| nmcli | NetworkManager по D-Bus + Checkpoint (автооткат) |
-| systemctl / pgrep / ss | `go-systemd` D-Bus, `/proc/net`, счётчики nft |
-| `pihole-FTL --config` | точечная правка `pihole.toml` при остановленном FTL |
+| Конфиг | `internal/config`: безопасный разбор KEY=VALUE, валидация, netmask/broadcast |
+| DHCP | `insomniacslk/dhcp` + свой менеджер аренд (JSON-снапшот) |
+| DNS | DNS-прокси на `miekg/dns`: override-upstream, nft-set по ответам, ECS, локальная зона |
+| Межсетевой экран | `google/nftables`, своя таблица `router_service` |
+| Адрес RPi | NetworkManager по D-Bus + Checkpoint (автооткат) |
+| Сервисы | systemd по D-Bus (`go-systemd`), состояние — `/proc/net`, счётчики nft |
+| Pi-hole | точечная правка `pihole.toml` при остановленном FTL |
 
-Остаются внешними: Pi-hole, dnscrypt-proxy, GOST. Кода импорта/миграции
-данных из заменяемых сервисов (аренды Kea и т.п.) нет — осознанно.
+Внешние компоненты, которыми routerd управляет: Pi-hole,
+dnscrypt-proxy, GOST.
 
 ## Принятые решения
 
@@ -53,15 +53,17 @@ UDP/443 к VPN-адресам → REJECT icmp port-unreachable (браузер �
 - GOST: конфиг под управлением пользователя, routerd только запускает/проверяет юнит.
   Удалённая сторона может быть цепочкой из нескольких узлов — routerd о ней ничего
   не знает, его зона ответственности заканчивается на локальном слушателе GOST или `tun0`.
-- Новые ключи `router.conf` допустимы, всегда с дефолтами: `VPN_MODE`, `VPN_FAILOVER`,
-  `VPN_PORT`, `VPN_TUN`, `QUIC_REJECT`, `VPN_DYNAMIC_TIMEOUT` (24h),
-  `DNS_UPSTREAM` (`127.0.0.1#5353`), `FILTER_AAAA` (`vpn`), `DNS_ECS` (`yes`),
-  `DHCP_ENABLED` (`yes`), `DHCP_LEASE_TIME` (`24h`), `LOCAL_DOMAIN` (`lan`),
-  `PIHOLE_MANAGE` (`yes`), `PIHOLE_TOML` (`/etc/pihole/pihole.toml`),
-  `DNSCRYPT_ADDR` (`127.0.0.1#5053`).
+- Все ключи `router.conf` имеют значения по умолчанию: адресация LAN (`IFACE`,
+  `ROUTER_IP`, `RPI5_IP`, `LAN_SUBNET`, пул, `DNS1`/`DNS2`, `NM_CONN`) и ключи
+  `VPN_MODE`, `VPN_FAILOVER`, `VPN_PORT`, `VPN_TUN`, `QUIC_REJECT`,
+  `VPN_DYNAMIC_TIMEOUT` (24h), `DNS_UPSTREAM` (`127.0.0.1#5353`), `FILTER_AAAA`
+  (`vpn`), `DNS_ECS` (`yes`), `DHCP_ENABLED` (`yes`), `DHCP_LEASE_TIME` (`24h`),
+  `LOCAL_DOMAIN` (`lan`), `PIHOLE_MANAGE` (`yes`), `PIHOLE_TOML`
+  (`/etc/pihole/pihole.toml`), `DNSCRYPT_ADDR` (`127.0.0.1#5053`). Описание —
+  [deploy/config/router.conf](../deploy/config/router.conf).
 - `routerd.service` — `Type=notify-reload`: `reload-vpn-domains` завершается,
   когда routerd применил списки; статус применения — в `StatusText` юнита.
-- DNS-прокси (этап 3): слушает адрес RPi и `127.0.0.1` на :53 (как dnsmasq с
+- DNS-прокси: слушает адрес RPi и `127.0.0.1` на :53 (как dnsmasq с
   `interface=eth0`; `IP_FREEBIND` — можно стартовать до назначения адреса),
   без кэша, до 300 одновременных запросов к upstream, повтор по TCP при TC,
   урезание ответа под размер UDP клиента. Домен из списка (и его поддомены,
@@ -73,10 +75,10 @@ UDP/443 к VPN-адресам → REJECT icmp port-unreachable (браузер �
   для loopback-клиентов; клиенту ECS и OPT возвращаются только если он сам их
   прислал. bogus-priv: PTR частных и служебных сетей (RFC 6303, 100.64/10) — NXDOMAIN.
 - Модуль требует Go 1.25 (зависимости `miekg/dns`, `insomniacslk/dhcp`).
-  Сборка — кросс-компиляция на машине разработчика, бинарник статический;
+  Сборка — кросс-компиляция на macOS или Linux, бинарник статический;
   на Debian 13 Go 1.25+ есть в trixie-backports.
-- DHCP (этап 4): UDP :67 на интерфейсе LAN (SO_BINDTODEVICE), ответы клиентам
-  без адреса — broadcast (raw-сокет не нужен). Опции как в Kea: маска, шлюз и DNS =
+- DHCP: UDP :67 на интерфейсе LAN (SO_BINDTODEVICE), ответы клиентам
+  без адреса — broadcast (raw-сокет не нужен). Опции: маска, шлюз и DNS =
   RPi, broadcast, домен (`LOCAL_DOMAIN`), срок аренды (`DHCP_LEASE_TIME`, 24h),
   T1 = 1/2, T2 = 7/8 срока. Клиент — по client-id (опция 61), иначе по MAC.
   Выбор адреса: прежний адрес клиента → запрошенный → никогда не выданный →
@@ -90,9 +92,10 @@ UDP/443 к VPN-адресам → REJECT icmp port-unreachable (браузер �
 - Имена клиентов: hostname (опция 12) → метка DNS (`iPhone (Bob)` → `iphone-bob`),
   повторы — `-2`, `-3`; имя закреплено за клиентом, пока его запись свежая
   (истекла не раньше срока аренды назад). DNS-прокси отвечает на `имя.lan` и PTR
-  адресов из аренд сам, никогда не пересылая в Pi-hole (тот ответил бы на `.lan`
-  NXDOMAIN); чужие имена в `.lan` — NXDOMAIN.
-- Pi-hole (этап 5, `PIHOLE_MANAGE=yes`): при старте и SIGHUP routerd сверяет в
+  адресов из аренд сам, никогда не пересылая в Pi-hole: тот обслуживает `lan`,
+  `internal`, `home.arpa` локально и ответил бы NXDOMAIN; чужие имена в `.lan` —
+  NXDOMAIN.
+- Pi-hole (`PIHOLE_MANAGE=yes`): при старте и SIGHUP routerd сверяет в
   `pihole.toml` ключи цепочки — `dns.port` (порт из `DNS_UPSTREAM`),
   `dns.upstreams` (`DNSCRYPT_ADDR`), `dns.EDNS0ECS` (`DNS_ECS`) и свою запись
   `dns.revServers` (`true,<LAN>,127.0.0.1#53,<LOCAL_DOMAIN>` — Pi-hole спрашивает
@@ -105,8 +108,8 @@ UDP/443 к VPN-адресам → REJECT icmp port-unreachable (браузер �
   `ReadWritePaths=/etc/pihole`. Состояние — в `status`.
 - dnscrypt-proxy: конфиг ведёт пользователь; routerd только проверяет по D-Bus,
   что `dnscrypt-proxy.socket` слушает `DNSCRYPT_ADDR`, и показывает это в `status`.
-- `apply-network` (этап 5): как `nmcli con mod … && nmcli con up` в bash-версии,
-  но через D-Bus NetworkManager. Подключение — `NM_CONN`, иначе ethernet-подключение
+- `apply-network`: по аналогии с `nmcli con mod … && nmcli con up`, но через
+  D-Bus NetworkManager. Подключение — `NM_CONN`, иначе ethernet-подключение
   `IFACE`. Перед изменением — `CheckpointCreate` на устройство с откатом через 60 с;
   профиль обновляется (`Update2`, на диск — для netplan-профиля NM пишет и YAML),
   устаревший ключ `addresses` удаляется (иначе NM игнорирует `address-data` и
@@ -119,6 +122,8 @@ UDP/443 к VPN-адресам → REJECT icmp port-unreachable (браузер �
   в namespace не работает) — только юнит-тесты с подделкой D-Bus.
 - Перезагрузка сохраняет адреса в `vpn_dynamic`; если параметры set'ов изменились
   (например, таймаут), таблица пересоздаётся — не все ядра обновляют их на месте.
+- `send_redirects=0` выставляется и для `all`, и для `IFACE`: ядро объединяет
+  их по OR, и иначе RPi рассылала бы клиентам ICMP redirect на роутер.
 
 ### Режимы VPN
 
@@ -129,7 +134,7 @@ UDP/443 к VPN-адресам → REJECT icmp port-unreachable (браузер �
 | `route` | `tun://` (L3) | метка + `ct mark`, `ip rule` → `default dev VPN_TUN`, MSS clamp, `rp_filter=2` на tun | весь IP |
 
 `tproxy` — целевой режим: TCP завершается на RPi (нет TCP-over-TCP), UDP идёт
-через relay. `route` — полная прозрачность ценой TCP-over-TCP.
+поверх HTTP-туннеля GOST (`udp=true`). `route` — полная прозрачность ценой TCP-over-TCP.
 
 Детали реализации:
 
@@ -151,7 +156,9 @@ UDP/443 к VPN-адресам → REJECT icmp port-unreachable (браузер �
   Состояние видно в `router_service_ctl status` (StatusText routerd).
 
 GOST-клиенту в режимах `tproxy` и `route` нужен `CAP_NET_ADMIN`
-(`IP_TRANSPARENT`, создание tun): юнит GOST ведёт пользователь.
+(`IP_TRANSPARENT`, создание tun), в `tproxy` ещё `CAP_NET_BIND_SERVICE`
+(ответ на UDP с исходного порта сервера): юнит GOST ведёт пользователь, пример —
+`deploy/systemd/gost-run.service`.
 
 | Ключ | Значения | По умолчанию |
 |---|---|---|
@@ -161,18 +168,9 @@ GOST-клиенту в режимах `tproxy` и `route` нужен `CAP_NET_AD
 | `VPN_TUN` | интерфейс для `route` | `tun0` |
 | `QUIC_REJECT` | отклонять UDP/443 к VPN-адресам | `yes` |
 
-Удалённая сторона (под управлением пользователя): GOST `relay` (`bind=true`)
-поверх WebSocket за обратным HTTPS-прокси (nginx, TLS, аутентификация клиента);
-один сервис покрывает все три режима.
-
-### Исправленные ошибки bash-версии
-
-1. `reload-vpn-domains` терял `dns_override` до полного рестарта.
-2. Формат `upstream:port` в `dns_override.txt` не работал (dnsmasq ждёт `#`) — принимаются оба.
-3. `send_redirects=0` выставлялся только для `all`, а ядро делает OR с `eth0` — RPi слала клиентам ICMP redirect.
-4. `999.1.1.1` считался IP; CIDR не нормализовался (`1.2.3.4/24` → `1.2.3.0/24`).
-5. Точка в домене была regex в grep/sed; `echo >>` склеивал строки без завершающего `\n`.
-6. dnsmasq запускался без надзора через pid-файл.
+Удалённая сторона (под управлением пользователя): nginx `stream` с выбором по SNI
+→ GOST `http` поверх TLS с авторизацией и `udp=true`, цепочка узлов на сервере,
+tun-сервер на выходном узле для `route` — [TUNNEL.md](TUNNEL.md).
 
 ## Структура
 
@@ -181,7 +179,7 @@ cmd/routerd/          точка входа; argv[0]=router_service_ctl → CLI
 internal/config/      router.conf
 internal/domain/      нормализация, проверка, суффиксный матчер (семантика dnsmasq)
 internal/lists/       vpn_domains.txt, dns_override.txt; flock + атомарная запись
-internal/cli/         команды router_service_ctl
+internal/cli/         команды router_service_ctl, автодополнение bash/zsh
 internal/services/    systemd по D-Bus, порядок запуска (+ servicestest — подделка для тестов)
 internal/sysinfo/     /proc: слушающие порты, sysctl (для status)
 internal/firewall/    nftables через netlink: таблица router_service, set'ы, правила (Linux)
@@ -191,56 +189,39 @@ internal/dnsproxy/    DNS-прокси на :53 (miekg/dns): override, nft-set �
 internal/dhcp/        DHCP: пул и аренды (чистая логика), обработка сообщений, JSON-хранилище,
                       зона имён; сокет :67 и проверка ARP — Linux
 internal/routing/     policy routing через netlink: ip rule, таблица 152 (Linux)
+internal/pihole/      сверка и точечная правка ключей цепочки в pihole.toml
+internal/netcfg/      apply-network: NetworkManager по D-Bus + Checkpoint
 internal/daemon/      routerd run: применение, sd_notify (notify-reload), SIGHUP,
                       слежение за туннелем, VPN_FAILOVER, очистка
 deploy/systemd/       routerd.service, пример gost-run.service
 deploy/config/        примеры router.conf (все ключи), vpn_domains.txt, dns_override.txt
 install.sh            установка/обновление на RPi (bash — единственное место вне Go)
-testbed/              стенд: lab.sh, эталон ядра RPi, конфиги стенда
-internal/pihole/      сверка и точечная правка ключей цепочки в pihole.toml
-internal/netcfg/      apply-network: NetworkManager по D-Bus + Checkpoint
-— далее по этапам —
-internal/control/     unix-сокет CLI ↔ демон
+testbed/              стенд: lab.sh, эталон ядра RPi, конфиги стенда и узлов туннеля
 ```
 
-Юнит-тесты — всё, что не трогает ядро (работают и на macOS).
+Юнит-тесты — всё, что не трогает ядро (работают на macOS и Linux).
 Linux-специфичное — под `//go:build linux`, проверяется на стенде.
-
-## Этапы
-
-Боевая RPi не трогается, пока Go-версия не проверена на стенде целиком, поэтому
-этапы не обязаны сосуществовать с bash-стеком на одном устройстве. Точка отката
-при переключении боя — юниты bash-версии (отключаются, не удаляются).
-
-| # | routerd берёт на себя | Остаётся старым |
-|---|---|---|
-| 0 | каркас: config, lists, domain, CLI на чтение (`info`, `list-vpn-domains`, `check-config`) | всё |
-| 1 | все команды CLI (кроме apply-network), start/stop/status/logs через D-Bus; правки списков применяются через `ReloadUnit(routerd.service)` (SIGHUP) | init.sh, ipset, dnsmasq, Kea, nmcli |
-| 2 | демон `routerd run`, nftables + sysctl (режим `redirect`), dnsmasq на `nftset=` как юнит `routerd-dnsmasq`; стенд и сквозные проверки | dnsmasq, Kea, nmcli |
-| 2a | режимы `tproxy` и `route`, `VPN_FAILOVER`, policy routing (`internal/routing`); стенд — все режимы × closed/open | dnsmasq, Kea, nmcli |
-| 3 | DNS-прокси на Go вместо dnsmasq; `routerd-dnsmasq` и пакет `internal/dnsmasq` удалены. Теневой режим не понадобился — боевая RPi до проверки всего на стенде не трогается | Kea, nmcli |
-| 4 | DHCP вместо Kea (`insomniacslk/dhcp`), имена `*.lan` и PTR из аренд; клиент стенда получает адрес по DHCP | nmcli |
-| 5 | `apply-network` (NetworkManager D-Bus + Checkpoint), сверка `pihole.toml`, проверка `dnscrypt-proxy.socket` | — |
-| 6 | `install.sh` (зависимости, routerd, примеры конфигов, автозапуск), автодополнение из бинарника (`routerd completion`), `make dist`; стенд ставит routerd через `install.sh`. Переход боевой RPi с bash-версии — отдельный скрипт вне репозитория | — |
 
 ## Тестовый стенд
 
-Без Docker: одна VM Debian 13 arm64 (OrbStack на Mac), внутри — network
-namespace, связанные veth-парами:
+Одна Linux-машина arm64 (Debian 13; на Mac — VM OrbStack, на Linux — VM или
+выделенная машина), внутри — network namespace, связанные veth-парами:
 
 - `rpi` — routerd, Pi-hole, dnscrypt-proxy, nftables, GOST-клиент;
 - `client` — получает адрес по DHCP от routerd (busybox udhcpc), dig, curl;
   `client2` — устройство со статикой для проверки конфликтов адресов;
   REQUEST в состоянии INIT-REBOOT и RELEASE отправляет `testbed/dhcpprobe`
   (busybox udhcpc их по запросу не шлёт);
-- `exit` — удалённый узел туннеля: GOST-сервер с той же конфигурацией, что в рабочей
-  среде, и тестовый веб-сервер;
-- внешний роутер — отдельный namespace (не основной namespace VM, чтобы
+- `entry`, `exit` — входной и выходной узлы туннеля:
+  nginx `stream` (SNI, `proxy_protocol`) → GOST `http`+`tls` с авторизацией и
+  `probeResist`, цепочка entry → exit, tun-сервер на exit; сертификаты от CA стенда;
+- внешний роутер — отдельный namespace (не основной namespace машины, чтобы
   трафик не утёк в настоящий интернет).
 
 Стенд автономный, проверка пакетами (tcpdump) и журналами сервисов,
 короткие таймауты set. Поднимается и сносится одним скриптом; первым шагом
-сверяет nft-опции ядра VM с эталоном боевого ядра (`testbed/kernel-rpi.txt`).
+сверяет nft-опции ядра машины с эталоном боевого ядра RPi
+(`testbed/kernel-rpi.txt`: 6.12 rpt, 16K-страницы).
 
 DNS-цепочка стенда повторяет боевую: настоящий Pi-hole v6 (ставится
 официальным установщиком в автоматическом режиме — нужен заранее созданный
@@ -251,14 +232,6 @@ DNS stamp по хэшу собственного CA стенда; за ним �
 зон (203.0.113.54), отвечающий NXDOMAIN на всё прочее (иначе dnscrypt-proxy
 отбраковывает сервер как «lying resolver»). Тестовые зоны — `*.example`:
 на `.test` Pi-hole отвечает сам (RFC 6761), не спрашивая upstream.
-
-Важно для этапа 4: Pi-hole так же локально обслуживает `lan`, `internal`,
-`home.arpa`, `pi.hole` (`local=/lan/`), поэтому имена `*.lan` из DHCP-аренд
-routerd должен отдавать сам, до пересылки в Pi-hole.
-Боевая RPi (ядро 6.12 rpt, 16K-страницы) в тестах не участвует.
-
-Пока не повторяет бой: туннель — `relay+ws` без TLS и nginx (ждёт разбора
-боевых конфигов удалённой стороны).
 
 Нельзя проверить на стенде: реакцию клиентов на ICMP redirect, Android/Chrome,
 IPv6 от реального роутера, производительность, NetworkManager/Checkpoint,

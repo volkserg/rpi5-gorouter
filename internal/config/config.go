@@ -1,6 +1,5 @@
-// Package config читает router.conf — центральный конфиг сети, общий с
-// bash-версией router_service, — проверяет его и вычисляет производные
-// параметры LAN (маска, broadcast).
+// Package config читает router.conf — центральный конфиг routerd, —
+// проверяет его и вычисляет производные параметры LAN (маска, broadcast).
 package config
 
 import (
@@ -67,7 +66,7 @@ type Config struct {
 	// чтобы Pi-hole видел реальных клиентов, а не 127.0.0.1.
 	DNSECS bool
 
-	// DHCPEnabled — обслуживать DHCP в LAN (вместо Kea).
+	// DHCPEnabled — обслуживать DHCP в LAN.
 	DHCPEnabled bool
 	// DHCPLeaseTime — срок аренды.
 	DHCPLeaseTime time.Duration
@@ -89,8 +88,8 @@ const (
 	FilterAAAANone = "none"
 )
 
-// Значения по умолчанию совпадают с дефолтами bash-скриптов
-// (${VAR:-default}): пустое значение тоже заменяется дефолтом.
+// Значения по умолчанию; пустое значение тоже заменяется значением по
+// умолчанию (как ${VAR:-default} в shell).
 var defaults = map[string]string{
 	"IFACE":          "eth0",
 	"NM_CONN":        "netplan-eth0",
@@ -102,7 +101,6 @@ var defaults = map[string]string{
 	"DNS1":           "1.1.1.1",
 	"DNS2":           "8.8.8.8",
 
-	// Ключи routerd (в bash-версии были зашиты в скрипты).
 	"VPN_MODE":            ModeRedirect,
 	"VPN_FAILOVER":        "closed",
 	"VPN_TUN":             "tun0",
@@ -124,7 +122,7 @@ var defaults = map[string]string{
 type Warning string
 
 // Load читает router.conf по пути path. Отсутствие файла — не ошибка:
-// как и bash-скрипты, используем встроенные значения и сообщаем об этом.
+// используются значения по умолчанию, и об этом выдаётся предупреждение.
 func Load(path string) (*Config, []Warning, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -281,8 +279,8 @@ func FromValues(values map[string]string) (*Config, error) {
 	return cfg, nil
 }
 
-// Validate проверяет согласованность адресации. Bash-версия этого не делала:
-// ошибка в router.conf всплывала только при старте Kea или вообще молча.
+// Validate проверяет согласованность адресации, чтобы ошибка в router.conf
+// обнаруживалась при проверке конфига, а не по сбоям DHCP и маршрутизации.
 func (c *Config) Validate() error {
 	var errs []error
 	fail := func(format string, a ...any) { errs = append(errs, fmt.Errorf(format, a...)) }

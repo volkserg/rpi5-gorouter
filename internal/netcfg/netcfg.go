@@ -1,5 +1,5 @@
 // Package netcfg применяет статический адрес RPi через NetworkManager по
-// D-Bus (вместо nmcli) с защитой Checkpoint: если изменение не подтверждено
+// D-Bus с защитой Checkpoint: если изменение не подтверждено
 // за отведённое время (например, пропал доступ по SSH), NetworkManager сам
 // возвращает прежние настройки.
 package netcfg
@@ -123,7 +123,7 @@ func forCheckpoints(ctx context.Context, nm NM, iface string, f func(context.Con
 }
 
 // findConnection — подключение NM_CONN, иначе первое ethernet-подключение
-// интерфейса (как resolve_nm_conn в bash-версии).
+// интерфейса.
 func findConnection(ctx context.Context, nm NM, p Params) (dbus.ObjectPath, Settings, error) {
 	conns, err := nm.Connections(ctx)
 	if err != nil {
@@ -150,7 +150,7 @@ func findConnection(ctx context.Context, nm NM, p Params) (dbus.ObjectPath, Sett
 	return "", nil, fmt.Errorf("нет подключения NetworkManager %q и ethernet-подключения для %s", p.ConnName, p.Iface)
 }
 
-// manualIPv4 — копия настроек со статическим IPv4 (как nmcli con mod
+// manualIPv4 — копия настроек со статическим IPv4 (по аналогии с nmcli con mod
 // ipv4.method manual ipv4.addresses … ipv4.gateway … ipv4.dns … ipv4.ignore-auto-dns yes).
 func manualIPv4(cur Settings, p Params) (Settings, []Change) {
 	next := Settings{}

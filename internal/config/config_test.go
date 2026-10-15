@@ -66,7 +66,7 @@ func TestDefaultsMatchReference(t *testing.T) {
 		cfg.LANSubnet.String() != "192.168.3.0/24" ||
 		cfg.PoolStart.String() != "192.168.3.100" || cfg.PoolEnd.String() != "192.168.3.250" ||
 		len(cfg.DNS) != 2 || cfg.DNS[0].String() != "1.1.1.1" || cfg.DNS[1].String() != "8.8.8.8" {
-		t.Errorf("дефолты не совпадают с bash: %+v", cfg)
+		t.Errorf("неожиданные значения по умолчанию: %+v", cfg)
 	}
 }
 
@@ -143,9 +143,9 @@ func TestLoad(t *testing.T) {
 	}
 }
 
-// Конфиг из референсного репозитория должен читаться без ошибок и предупреждений.
-func TestReferenceRouterConf(t *testing.T) {
-	cfg, warns, err := Load(filepath.Join("testdata", "router.conf"))
+// Поставляемый пример конфига должен читаться без ошибок и предупреждений.
+func TestExampleRouterConf(t *testing.T) {
+	cfg, warns, err := Load(filepath.Join("..", "..", "deploy", "config", "router.conf"))
 	if err != nil {
 		t.Fatal(err)
 	}

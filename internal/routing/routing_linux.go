@@ -1,7 +1,7 @@
 //go:build linux
 
-// Package routing — policy routing routerd через netlink (вместо ip rule /
-// ip route): пакеты с меткой firewall.Mark уходят в таблицу
+// Package routing — policy routing routerd через netlink (по аналогии с
+// ip rule / ip route): пакеты с меткой firewall.Mark уходят в таблицу
 // firewall.RouteTable, содержимое которой зависит от режима.
 //
 //	tproxy: local 0.0.0.0/0 dev lo          — доставка перехваченного слушателю

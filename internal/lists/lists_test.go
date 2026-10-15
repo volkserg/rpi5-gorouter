@@ -107,7 +107,7 @@ func TestAddRemove(t *testing.T) {
 	}
 }
 
-// Похожие строки не должны удаляться: в bash sed /^a.com$/d считал точку regex.
+// Похожие строки не удаляются: точка в записи — не символ регулярного выражения.
 func TestRemoveExactOnly(t *testing.T) {
 	l, _ := ParseVPN(strings.NewReader("a.com\nabcom.net\nsub.a.com\n"))
 	e, _ := ParseEntry("a.com")
@@ -136,7 +136,7 @@ func TestMerge(t *testing.T) {
 
 func TestUpdateVPN(t *testing.T) {
 	path := filepath.Join(t.TempDir(), VPNFileName)
-	// Файл без завершающего перевода строки: bash склеил бы новую запись с последней.
+	// Файл без завершающего перевода строки: новая запись не должна склеиться с последней.
 	if err := os.WriteFile(path, []byte("intranet.com"), 0o640); err != nil {
 		t.Fatal(err)
 	}

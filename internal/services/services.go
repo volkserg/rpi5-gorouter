@@ -1,5 +1,5 @@
 // Package services управляет systemd-юнитами router_service по D-Bus
-// (вместо systemctl) и знает порядок их запуска.
+// (по аналогии с systemctl) и знает порядок их запуска.
 package services
 
 import (
@@ -55,8 +55,8 @@ type Manager interface {
 // Step — шаг запуска стека.
 type Step struct {
 	Unit string
-	// Required — ошибка шага прерывает запуск; иначе — предупреждение,
-	// как в bash-версии (dnscrypt-proxy и Pi-hole могли не стартовать).
+	// Required — ошибка шага прерывает запуск; иначе — предупреждение
+	// (без dnscrypt-proxy или Pi-hole routerd всё равно запускается).
 	Required bool
 }
 
@@ -71,7 +71,7 @@ var StartOrder = []Step{
 }
 
 // StopOrder — что останавливает `stop`: туннель и routerd. Pi-hole и
-// dnscrypt-proxy остаются работать, как и в bash-версии.
+// dnscrypt-proxy остаются работать.
 var StopOrder = []string{UnitGost, UnitRouterd}
 
 // StatusUnits — юниты, показываемые в status.

@@ -108,10 +108,10 @@ place() {
 [[ -x "${ROUTERD_BIN}" ]] || die "нет ${ROUTERD_BIN} — соберите (make build-rpi) или укажите ROUTERD_BIN"
 VERSION="$("${ROUTERD_BIN}" version 2>&1)" || die "${ROUTERD_BIN} не запускается на этой системе ($(uname -m)): ${VERSION}"
 log_info "Устанавливается ${VERSION}"
-# Обычный файл вместо symlink на routerd — другая установка (например,
-# bash-версия router_service): её перенос — отдельная задача, не затираем.
+# Обычный файл вместо symlink на routerd — другая программа с тем же именем:
+# не затираем.
 if [[ -e "${BIN_DIR}/router_service_ctl" && ! -L "${BIN_DIR}/router_service_ctl" ]]; then
-    die "${BIN_DIR}/router_service_ctl — не symlink на routerd: сначала уберите прежнюю установку"
+    die "${BIN_DIR}/router_service_ctl — не symlink на routerd: сначала уберите или переименуйте его"
 fi
 
 #===============================================================================

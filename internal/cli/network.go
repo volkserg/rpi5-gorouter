@@ -12,7 +12,7 @@ import (
 const networkRollback = 60 * time.Second
 
 // cmdApplyNetwork — статический адрес RPi из router.conf через NetworkManager
-// (как nmcli con mod + con up в bash-версии), под защитой checkpoint.
+// (по аналогии с nmcli con mod + con up), под защитой checkpoint.
 func cmdApplyNetwork(x *ctx, args []string) int {
 	mode := "apply"
 	if len(args) > 0 {

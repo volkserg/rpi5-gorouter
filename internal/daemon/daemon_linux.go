@@ -503,7 +503,7 @@ func waitDNS(ctx context.Context, server netip.AddrPort, limit time.Duration) {
 	}
 }
 
-// cleanup останавливает DHCP и DNS и убирает правила routerd (как stop в bash-версии).
+// cleanup останавливает DHCP и DNS и убирает правила routerd.
 func (d *daemon) cleanup() {
 	if d.dhcpSrv != nil {
 		_ = d.dhcpSrv.Close()

@@ -1,5 +1,4 @@
-// Package cli — команды router_service_ctl. Имена команд, аргументы и тексты
-// сообщений совпадают с bash-версией, чтобы скрипты и привычки не ломались.
+// Package cli — команды router_service_ctl.
 package cli
 
 import (
@@ -83,10 +82,10 @@ func isTerminal(f *os.File) bool {
 
 type command struct {
 	name, args, help string
-	run              func(*ctx, []string) int // nil — ещё не перенесена в Go
+	run              func(*ctx, []string) int
 }
 
-// commands — в порядке вывода справки bash-версии; check-config — новая.
+// commands — в порядке вывода справки; пустая запись — разделитель групп.
 var commands = []command{
 	{"status", "", "Показать состояние всех компонентов", cmdStatus},
 	{"info", "", "Показать информацию о конфигурации и конфигах", cmdInfo},
@@ -159,12 +158,8 @@ func Run(env Env, args []string) int {
 		return 0
 	}
 	for _, c := range commands {
-		if c.name != name {
+		if c.name != name || c.run == nil {
 			continue
-		}
-		if c.run == nil {
-			x.errf("Команда '%s' ещё не перенесена в Go-версию — используйте bash router_service_ctl.", name)
-			return 1
 		}
 		return c.run(x, args)
 	}

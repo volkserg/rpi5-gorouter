@@ -34,7 +34,6 @@ func (x *ctx) withManager(fn func(context.Context, services.Manager) int) int {
 }
 
 // applyLists просит routerd перечитать списки (SIGHUP через ReloadUnit).
-// В bash-версии это делали ipset add/flush и перезапуск dnsmasq.
 // applied=false — routerd не запущен, список применится при старте.
 func (x *ctx) applyLists() (code int, applied bool) {
 	code = x.withManager(func(ctx context.Context, m services.Manager) int {

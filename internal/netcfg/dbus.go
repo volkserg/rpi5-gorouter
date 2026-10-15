@@ -18,7 +18,7 @@ const (
 	// NM_DEVICE_STATE_ACTIVATED / _FAILED.
 	deviceActivated = 100
 	deviceFailed    = 120
-	// NM_SETTINGS_UPDATE2_FLAG_TO_DISK — сохранить профиль (как nmcli con mod).
+	// NM_SETTINGS_UPDATE2_FLAG_TO_DISK — сохранить профиль на диск.
 	updateToDisk = 0x1
 )
 

@@ -10,8 +10,8 @@ import (
 	"syscall"
 )
 
-// ReadVPN читает vpn_domains.txt. Отсутствующий файл — пустой список
-// (exists=false), как и в bash, где отсутствие файла не было ошибкой.
+// ReadVPN читает vpn_domains.txt. Отсутствующий файл — не ошибка, а пустой
+// список (exists=false).
 func ReadVPN(path string) (l *VPNList, exists bool, err error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
