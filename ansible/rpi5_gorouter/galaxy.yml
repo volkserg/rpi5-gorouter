@@ -8,6 +8,8 @@ description: Установка и настройка routerd (шлюз LAN дл
 license:
   - MIT
 tags:
+  - networking
+  - linux
   - raspberrypi
   - router
   - dns
