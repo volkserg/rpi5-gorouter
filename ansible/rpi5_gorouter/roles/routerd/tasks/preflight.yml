@@ -1,0 +1,24 @@
+---
+- name: Платформа — Linux arm64 с systemd
+  ansible.builtin.assert:
+    that:
+      - ansible_system == 'Linux'
+      - ansible_architecture in ['aarch64', 'arm64']
+      - ansible_service_mgr == 'systemd'
+    fail_msg: "routerd собирается под linux/arm64 и работает под systemd"
+    quiet: true
+
+- name: Имена команд управления
+  ansible.builtin.stat:
+    path: "{{ routerd_bin_dir }}/{{ item }}"
+  loop: "{{ _routerd_ctl_names }}"
+  register: _routerd_ctl_stat
+
+- name: Имена команд не заняты другой программой
+  ansible.builtin.assert:
+    that: not item.stat.exists or item.stat.islnk
+    fail_msg: "{{ item.stat.path }} — не symlink на routerd: уберите или переименуйте его"
+    quiet: true
+  loop: "{{ _routerd_ctl_stat.results }}"
+  loop_control:
+    label: "{{ item.item }}"

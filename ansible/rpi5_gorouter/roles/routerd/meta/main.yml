@@ -1,0 +1,10 @@
+---
+galaxy_info:
+  author: volkserg
+  description: Установка и настройка routerd на Raspberry Pi 5
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Debian
+      versions: [trixie]
+dependencies: []

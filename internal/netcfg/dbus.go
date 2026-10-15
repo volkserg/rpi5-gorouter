@@ -18,8 +18,9 @@ const (
 	// NM_DEVICE_STATE_ACTIVATED / _FAILED.
 	deviceActivated = 100
 	deviceFailed    = 120
-	// NM_SETTINGS_UPDATE2_FLAG_TO_DISK — сохранить профиль на диск.
-	updateToDisk = 0x1
+	// NM_SETTINGS_UPDATE2_FLAG_IN_MEMORY — изменить профиль только в памяти;
+	// на диск его пишет Save при подтверждении.
+	updateInMemory = 0x2
 )
 
 // DBusNM — NM поверх системной шины.
@@ -62,7 +63,11 @@ func (n *DBusNM) GetSettings(ctx context.Context, conn dbus.ObjectPath) (Setting
 func (n *DBusNM) UpdateSettings(ctx context.Context, conn dbus.ObjectPath, s Settings) error {
 	var result map[string]dbus.Variant
 	return n.obj(conn).CallWithContext(ctx, nmConnIface+".Update2", 0,
-		s, uint32(updateToDisk), map[string]dbus.Variant{}).Store(&result)
+		s, uint32(updateInMemory), map[string]dbus.Variant{}).Store(&result)
+}
+
+func (n *DBusNM) Save(ctx context.Context, conn dbus.ObjectPath) error {
+	return n.obj(conn).CallWithContext(ctx, nmConnIface+".Save", 0).Err
 }
 
 // Activate активирует подключение на устройстве и ждёт, пока устройство

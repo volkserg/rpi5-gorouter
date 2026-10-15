@@ -1,0 +1,11 @@
+---
+# Роль routerd на стенде: Ansible запускается внутри машины стенда
+# (connection: local); lab.sh test-ansible передаёт архив и режим.
+- name: routerd на стенде
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  vars_files:
+    - vars.yml
+  roles:
+    - volkserg.rpi5_gorouter.routerd

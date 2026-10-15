@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/volkserg/rpi5-gorouter/internal/fsutil"
 )
 
 // DefaultStateDir — каталог состояния routerd (StateDirectory=routerd).
@@ -66,7 +68,7 @@ func SaveLeases(path string, leases []Lease) error {
 	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	return fsutil.Rename(tmp.Name(), path)
 }
 
 // Zone — локальная DNS-зона из аренд (имя.lan ↔ адрес), для DNS-прокси.

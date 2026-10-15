@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -51,6 +52,9 @@ type Config struct {
 	VPNFailoverOpen bool
 	// VPNTun — интерфейс туннеля для режима route.
 	VPNTun string
+	// VPNService — systemd-юнит клиента туннеля (GOST), которым управляют
+	// start/stop/status/logs.
+	VPNService string
 	// VPNPort — порт локального слушателя туннеля (GOST).
 	VPNPort uint16
 	// QUICReject — отклонять UDP/443 к адресам из списков.
@@ -104,6 +108,7 @@ var defaults = map[string]string{
 	"VPN_MODE":            ModeRedirect,
 	"VPN_FAILOVER":        "closed",
 	"VPN_TUN":             "tun0",
+	"VPN_SERVICE":         "gost-run.service",
 	"VPN_PORT":            "1080",
 	"QUIC_REJECT":         "yes",
 	"VPN_DYNAMIC_TIMEOUT": "24h",
@@ -117,6 +122,9 @@ var defaults = map[string]string{
 	"PIHOLE_TOML":         "/etc/pihole/pihole.toml",
 	"DNSCRYPT_ADDR":       "127.0.0.1#5053",
 }
+
+// unitNameRe — имя service-юнита systemd (суффикс .service можно не писать).
+var unitNameRe = regexp.MustCompile(`^[A-Za-z0-9:_.@-]+\.service$`)
 
 // Warning — некритичное замечание к конфигу (неизвестный ключ, отсутствующий файл).
 type Warning string
@@ -201,6 +209,13 @@ func FromValues(values map[string]string) (*Config, error) {
 		cfg.VPNFailoverOpen = f == "open"
 	default:
 		errs = append(errs, fmt.Errorf("VPN_FAILOVER=%q: ожидается closed или open", f))
+	}
+	cfg.VPNService = get("VPN_SERVICE")
+	if !strings.Contains(cfg.VPNService, ".") {
+		cfg.VPNService += ".service"
+	}
+	if !unitNameRe.MatchString(cfg.VPNService) {
+		errs = append(errs, fmt.Errorf("VPN_SERVICE=%q: ожидается имя юнита systemd (например, gost-run.service)", get("VPN_SERVICE")))
 	}
 	cfg.VPNTun = get("VPN_TUN")
 	if err := validIfaceName(cfg.VPNTun); err != nil {

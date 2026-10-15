@@ -78,7 +78,12 @@ tun-сервер слушает только `127.0.0.1`: клиент дост�
 
 ## Клиент на RPi
 
-Пример — [deploy/systemd/gost-run.service](../deploy/systemd/gost-run.service):
+GOST и юнит клиента (`VPN_SERVICE` в `router.conf`, по умолчанию
+`gost-run.service`) ставятся вручную: `install.sh` и роль Ansible
+ставят только routerd. Бинарник — релиз
+[go-gost/gost](https://github.com/go-gost/gost/releases) (`linux_arm64`,
+сверить sha256 с `checksums.txt`) в `/usr/local/bin/gost`. Пример юнита —
+[deploy/systemd/gost-run.service](../deploy/systemd/gost-run.service):
 
 ```
 redirect  gost -L red://:1080 -F https://user:password@data.example.com:443?secure=true

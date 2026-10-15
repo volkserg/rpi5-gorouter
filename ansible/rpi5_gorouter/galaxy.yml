@@ -1,0 +1,17 @@
+namespace: volkserg
+name: rpi5_gorouter
+version: 0.1.0
+readme: README.md
+authors:
+  - volkserg
+description: Установка и настройка routerd (шлюз LAN для Raspberry Pi 5)
+license:
+  - MIT
+tags:
+  - raspberrypi
+  - router
+  - dns
+  - dhcp
+  - nftables
+repository: https://github.com/volkserg/rpi5-gorouter
+build_ignore: []

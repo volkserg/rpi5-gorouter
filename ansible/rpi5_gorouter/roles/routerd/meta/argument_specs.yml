@@ -1,0 +1,23 @@
+---
+argument_specs:
+  main:
+    short_description: Установка и настройка routerd
+    options:
+      routerd_version: {type: str, description: Версия релиза routerd}
+      routerd_release_base: {type: str, description: Базовый URL релизов}
+      routerd_archive: {type: str, description: Локальный архив вместо релиза}
+      routerd_config_dir: {type: path, description: Каталог конфигов}
+      routerd_bin_dir: {type: path, description: Каталог бинарников}
+      routerd_cache_dir: {type: path, description: Каталог загрузок}
+      routerd_conf: {type: dict, description: Ключи router.conf}
+      routerd_vpn_entries: {type: list, elements: str, description: Записи vpn_domains.txt}
+      routerd_dns_overrides:
+        type: list
+        elements: dict
+        description: Записи dns_override.txt
+        options:
+          domain: {type: str, required: true}
+          server: {type: str, required: true}
+      routerd_install_deps: {type: bool, description: Ставить Pi-hole и dnscrypt-proxy}
+      routerd_apply_network: {type: bool, description: Применять адрес RPi в NetworkManager}
+      routerd_start: {type: bool, description: Включать и запускать сервисы}

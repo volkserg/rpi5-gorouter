@@ -1,0 +1,11 @@
+---
+- name: Что изменится в сети (rsc apply-network --dry-run)
+  ansible.builtin.command: "{{ routerd_bin_dir }}/rsc apply-network --dry-run"
+  environment:
+    NO_COLOR: "1"
+  register: _routerd_net
+  changed_when: false
+
+- name: Применить адрес RPi
+  ansible.builtin.include_tasks: network_apply.yml
+  when: "'→' in _routerd_net.stdout"

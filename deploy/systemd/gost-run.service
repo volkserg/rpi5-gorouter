@@ -1,5 +1,6 @@
-# gost-run.service — клиент туннеля (GOST v3). Конфиг ваш: install.sh ставит
-# этот пример только если юнита ещё нет и никогда его не перезаписывает.
+# gost-run.service — пример юнита клиента туннеля (GOST v3). GOST и этот юнит
+# ставятся вручную (install.sh и роль Ansible их не трогают):
+#   sudo install -m 0644 gost-run.service /etc/systemd/system/
 # Удалённые узлы — docs/TUNNEL.md.
 #
 # Слушатель — под VPN_MODE в router.conf (порт — VPN_PORT):
@@ -12,6 +13,9 @@
 Description=GOST — клиент туннеля
 After=network-online.target
 Wants=network-online.target
+# Без ограничения частоты запусков (по умолчанию 5 за 10 с): после серии
+# перезапусков сервис шлюза не должен оставаться остановленным.
+StartLimitIntervalSec=0
 
 [Service]
 ExecStart=/usr/local/bin/gost -L red://:1080 -F https://user:password@vpn.example.com:443?secure=true

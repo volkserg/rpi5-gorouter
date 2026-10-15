@@ -1,0 +1,7 @@
+# {{ ansible_managed }}
+# Адрес dnscrypt-proxy в цепочке DNS (DNSCRYPT_ADDR).
+[Socket]
+ListenStream=
+ListenDatagram=
+ListenStream={{ _routerd_dnscrypt | replace('#', ':') }}
+ListenDatagram={{ _routerd_dnscrypt | replace('#', ':') }}

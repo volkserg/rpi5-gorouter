@@ -200,3 +200,17 @@ func TestRouterdKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestVPNService(t *testing.T) {
+	for in, want := range map[string]string{"": "gost-run.service", "gost-run": "gost-run.service", "vpn@corp.service": "vpn@corp.service"} {
+		cfg, err := FromValues(map[string]string{"VPN_SERVICE": in})
+		if err != nil || cfg.VPNService != want {
+			t.Errorf("%q: %v %v, ожидалось %s", in, cfg, err, want)
+		}
+	}
+	for _, bad := range []string{"gost run", "gost-run.socket", "../x.service"} {
+		if _, err := FromValues(map[string]string{"VPN_SERVICE": bad}); err == nil {
+			t.Errorf("%q: ожидалась ошибка", bad)
+		}
+	}
+}

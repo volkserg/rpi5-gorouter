@@ -1,0 +1,31 @@
+---
+# Версия routerd = релиз на GitHub (тег v<версия>).
+routerd_version: "0.1.0"
+routerd_release_base: "https://github.com/volkserg/rpi5-gorouter/releases/download"
+# Архив routerd-*-linux-arm64.tar.gz с машины, где запускается Ansible
+# (make dist) — вместо релиза. Пусто — релиз routerd_version.
+routerd_archive: ""
+
+routerd_config_dir: /usr/local/etc/router_service
+routerd_bin_dir: /usr/local/bin
+routerd_cache_dir: /var/cache/routerd
+
+# Ключи router.conf (описание — deploy/config/router.conf). Не указанные —
+# значения по умолчанию routerd. Файл целиком управляется ролью.
+routerd_conf: {}
+
+# Записи vpn_domains.txt (домены, IP, подсети) и dns_override.txt
+# ({domain, server}). null — файл не управляется ролью (правки через rsc).
+routerd_vpn_entries: null
+routerd_dns_overrides: null
+
+# Pi-hole (официальный установщик) и dnscrypt-proxy (apt) — если их нет.
+# Клиент туннеля (GOST, gost-run.service) роль не ставит и не настраивает.
+routerd_install_deps: true
+
+# apply-network: применить адрес RPi из router.conf в NetworkManager и
+# подтвердить, если Ansible снова достучался до RPi (иначе через 60 с
+# NetworkManager откатит изменения сам).
+routerd_apply_network: true
+# Включить и запустить сервисы (dnscrypt-proxy, Pi-hole, routerd).
+routerd_start: true

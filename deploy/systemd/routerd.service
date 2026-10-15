@@ -3,6 +3,9 @@ Description=routerd — шлюз LAN: NAT, DNS-фильтр, маршрутиз�
 Documentation=https://github.com/volkserg/rpi5-gorouter
 After=network-online.target
 Wants=network-online.target
+# Без ограничения частоты запусков (по умолчанию 5 за 10 с): после серии
+# перезапусков сервис шлюза не должен оставаться остановленным.
+StartLimitIntervalSec=0
 
 [Service]
 # notify-reload: systemd шлёт SIGHUP и ждёт READY=1 — reload-vpn-domains

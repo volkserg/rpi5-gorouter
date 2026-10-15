@@ -4,4 +4,4 @@
 *.out
 coverage.*
 .DS_Store
-/dist/
+.ansible/

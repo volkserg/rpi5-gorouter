@@ -48,7 +48,7 @@ func cmdInfo(x *ctx, _ []string) int {
 	if cfg.VPNFailoverOpen {
 		failover = "open"
 	}
-	x.out("  Туннель:            режим %s, порт %d, tun %s, VPN_FAILOVER=%s", cfg.VPNMode, cfg.VPNPort, cfg.VPNTun, failover)
+	x.out("  Туннель:            режим %s, порт %d, tun %s, VPN_FAILOVER=%s, юнит %s", cfg.VPNMode, cfg.VPNPort, cfg.VPNTun, failover, cfg.VPNService)
 	x.out("  QUIC reject:        %s", yesNo(cfg.QUICReject))
 	x.out("  vpn_dynamic:        таймаут %s", shortDuration(cfg.VPNDynamicTimeout))
 	x.out("")

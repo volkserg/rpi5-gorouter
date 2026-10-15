@@ -1,0 +1,15 @@
+---
+- name: Установленные сервисы
+  ansible.builtin.service_facts:
+
+# Порядок как у rsc start: цепочка DNS, затем routerd. Pi-hole — если
+# установлен; клиент туннеля (gost-run) настраивается отдельно.
+- name: Включить и запустить сервисы
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: >-
+    {{ ['dnscrypt-proxy.socket']
+       + (['pihole-FTL.service'] if 'pihole-FTL.service' in ansible_facts.services else [])
+       + ['routerd.service'] }}

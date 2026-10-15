@@ -1,0 +1,87 @@
+---
+- name: Каталог загрузок
+  ansible.builtin.file:
+    path: "{{ routerd_cache_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Архив routerd из релиза (проверка sha256 по SHA256SUMS)
+  ansible.builtin.get_url:
+    url: "{{ _routerd_release_url }}/{{ _routerd_archive_name }}"
+    dest: "{{ routerd_cache_dir }}/{{ _routerd_archive_name }}"
+    checksum: "sha256:{{ _routerd_release_url }}/SHA256SUMS"
+    mode: "0644"
+  register: _routerd_fetch
+  when: not routerd_archive
+
+- name: Архив routerd с машины Ansible
+  ansible.builtin.copy:
+    src: "{{ routerd_archive }}"
+    dest: "{{ routerd_cache_dir }}/{{ _routerd_archive_name }}"
+    mode: "0644"
+  register: _routerd_copy
+  when: routerd_archive | length > 0
+
+- name: Архив распакован?
+  ansible.builtin.stat:
+    path: "{{ _routerd_dir }}/bin/routerd-linux-arm64"
+  register: _routerd_unpacked
+
+- name: Распаковка routerd
+  ansible.builtin.unarchive:
+    src: "{{ routerd_cache_dir }}/{{ _routerd_archive_name }}"
+    dest: "{{ routerd_cache_dir }}"
+    remote_src: true
+  when: _routerd_fetch is changed or _routerd_copy is changed or not _routerd_unpacked.stat.exists
+
+- name: Бинарник routerd
+  ansible.builtin.copy:
+    src: "{{ _routerd_dir }}/bin/routerd-linux-arm64"
+    dest: "{{ routerd_bin_dir }}/routerd"
+    remote_src: true
+    mode: "0755"
+  notify: restart routerd
+
+- name: Команды управления (symlink на routerd)
+  ansible.builtin.file:
+    src: routerd
+    dest: "{{ routerd_bin_dir }}/{{ item }}"
+    state: link
+  loop: "{{ _routerd_ctl_names }}"
+
+- name: Юнит routerd.service
+  ansible.builtin.copy:
+    src: "{{ _routerd_dir }}/deploy/systemd/routerd.service"
+    dest: /etc/systemd/system/routerd.service
+    remote_src: true
+    mode: "0644"
+  notify: [daemon-reload, restart routerd]
+
+- name: Скрипты автодополнения
+  ansible.builtin.command: "{{ routerd_bin_dir }}/routerd completion {{ item }}"
+  loop: [bash, zsh]
+  register: _routerd_completion
+  changed_when: false
+
+- name: Каталоги автодополнения
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop: [/usr/share/bash-completion/completions, /usr/local/share/zsh/site-functions]
+
+- name: Автодополнение bash и zsh
+  ansible.builtin.copy:
+    content: "{{ item.stdout }}\n"
+    dest: "{{ {'bash': '/usr/share/bash-completion/completions/rsc', 'zsh': '/usr/local/share/zsh/site-functions/_rsc'}[item.item] }}"
+    mode: "0644"
+  loop: "{{ _routerd_completion.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+# bash-completion подгружает файл по имени команды — второе имя ссылкой.
+- name: Автодополнение bash для router_service_ctl
+  ansible.builtin.file:
+    src: rsc
+    dest: /usr/share/bash-completion/completions/router_service_ctl
+    state: link

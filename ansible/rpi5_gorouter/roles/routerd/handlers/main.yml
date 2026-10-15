@@ -1,0 +1,27 @@
+---
+- name: Перечитать юниты systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+  listen: daemon-reload
+
+- name: Перезапустить dnscrypt-proxy.socket
+  ansible.builtin.systemd:
+    name: dnscrypt-proxy.socket
+    state: restarted
+  listen: restart dnscrypt-proxy.socket
+  when: routerd_start
+
+- name: Перезапустить routerd
+  ansible.builtin.systemd:
+    name: routerd.service
+    state: restarted
+  listen: restart routerd
+  when: routerd_start
+
+# notify-reload: завершается, когда routerd применил конфиг и списки.
+- name: Перечитать конфиг routerd
+  ansible.builtin.systemd:
+    name: routerd.service
+    state: reloaded
+  listen: reload routerd
+  when: routerd_start

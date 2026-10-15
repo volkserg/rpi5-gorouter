@@ -15,7 +15,7 @@ import (
 
 var stack = []string{
 	services.UnitDNSCryptSocket, services.UnitDNSCrypt, services.UnitPihole,
-	services.UnitRouterd, services.UnitGost,
+	services.UnitRouterd, services.DefaultUnitGost,
 }
 
 func TestStartStopRestart(t *testing.T) {
@@ -103,7 +103,7 @@ func TestLogs(t *testing.T) {
 	var units []string
 	env.Journal = func(_ context.Context, w io.Writer, unit string, lines int) error {
 		units = append(units, unit)
-		if unit == services.UnitGost {
+		if unit == services.DefaultUnitGost {
 			return errors.New("exit status 1")
 		}
 		_, err := io.WriteString(w, "line from "+unit+"\n")
@@ -117,5 +117,47 @@ func TestLogs(t *testing.T) {
 	}
 	if !strings.Contains(o.String(), "--- systemd (routerd) ---\nline from routerd.service") || !strings.Contains(o.String(), "Нет логов") {
 		t.Errorf("out:\n%s", o.String())
+	}
+}
+
+// Юнит клиента туннеля задаётся в router.conf (VPN_SERVICE).
+func TestVPNServiceFromConfig(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "router.conf"), []byte("VPN_SERVICE=vpn-client\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := servicestest.New(services.UnitDNSCryptSocket, services.UnitDNSCrypt, services.UnitPihole,
+		services.UnitRouterd, "vpn-client.service")
+	if _, _, code := runFake(dir, f, "start"); code != 0 || !f.Units["vpn-client.service"].Running() {
+		t.Fatalf("start: code=%d calls=%v", code, f.Calls)
+	}
+	f.Calls = nil
+	runFake(dir, f, "stop")
+	if got := strings.Join(f.Calls, ","); got != "stop vpn-client.service,stop routerd.service" {
+		t.Errorf("stop: %s", got)
+	}
+	if out, _, _ := runFake(dir, f, "status"); !strings.Contains(out, "vpn-client") {
+		t.Errorf("status без vpn-client:\n%s", out)
+	}
+}
+
+// restart без юнита туннеля оставляет routerd запущенным.
+func TestRestartWithoutTunnelUnit(t *testing.T) {
+	f := servicestest.New(services.UnitDNSCryptSocket, services.UnitDNSCrypt, services.UnitPihole, services.UnitRouterd)
+	f.SetActive(services.UnitRouterd)
+	out, errOut, code := runFake(t.TempDir(), f, "restart")
+	if code != 0 || !f.Units[services.UnitRouterd].Running() {
+		t.Errorf("code=%d routerd=%v\n%s%s", code, f.Units[services.UnitRouterd], out, errOut)
+	}
+}
+
+// Остановка не удалась — restart всё равно запускает стек.
+func TestRestartStartsAfterStopFailure(t *testing.T) {
+	f := servicestest.New(stack...)
+	f.SetActive(services.UnitRouterd)
+	f.Fail[services.DefaultUnitGost] = true
+	_, _, code := runFake(t.TempDir(), f, "restart")
+	if code == 0 || !f.Units[services.UnitRouterd].Running() {
+		t.Errorf("code=%d, routerd должен работать: %v", code, f.Units[services.UnitRouterd])
 	}
 }

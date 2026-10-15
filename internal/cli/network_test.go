@@ -35,6 +35,10 @@ func (f *cliNM) UpdateSettings(_ context.Context, _ dbus.ObjectPath, s netcfg.Se
 	f.ip4 = s["ipv4"]
 	return nil
 }
+func (f *cliNM) Save(context.Context, dbus.ObjectPath) error {
+	f.calls = append(f.calls, "save")
+	return nil
+}
 func (f *cliNM) Activate(context.Context, dbus.ObjectPath, dbus.ObjectPath) error {
 	f.calls = append(f.calls, "activate")
 	return nil
@@ -93,7 +97,7 @@ func TestApplyNetwork(t *testing.T) {
 
 	env, out = nmEnv(t, nm, f)
 	Run(env, []string{"apply-network", "--confirm"})
-	if o, _ := out(); !strings.Contains(o, "подтверждены") || nm.calls[len(nm.calls)-1] != "destroy" {
+	if o, _ := out(); !strings.Contains(o, "подтверждены") || !strings.HasSuffix(strings.Join(nm.calls, ","), "save,destroy") {
 		t.Errorf("confirm:\n%s", o)
 	}
 

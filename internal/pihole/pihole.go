@@ -18,6 +18,7 @@ import (
 	"syscall"
 
 	"github.com/BurntSushi/toml"
+	"github.com/volkserg/rpi5-gorouter/internal/fsutil"
 )
 
 // DefaultPath — конфиг Pi-hole v6.
@@ -189,7 +190,7 @@ func writeLike(path string, data []byte) error {
 			return err
 		}
 	}
-	return os.Rename(tmp.Name(), path)
+	return fsutil.Rename(tmp.Name(), path)
 }
 
 func tomlArray(ss []string) string {

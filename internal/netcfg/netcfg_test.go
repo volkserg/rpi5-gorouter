@@ -17,6 +17,7 @@ type fakeNM struct {
 	activated   bool
 	failUpdate  bool
 	failActive  bool
+	failSave    bool
 	checkpoints []dbus.ObjectPath
 	calls       []string
 }
@@ -39,6 +40,13 @@ func (f *fakeNM) UpdateSettings(_ context.Context, c dbus.ObjectPath, s Settings
 		return errors.New("update failed")
 	}
 	f.updated = s
+	return nil
+}
+func (f *fakeNM) Save(_ context.Context, c dbus.ObjectPath) error {
+	f.calls = append(f.calls, "save "+string(c))
+	if f.failSave {
+		return errors.New("save failed")
+	}
 	return nil
 }
 func (f *fakeNM) Activate(_ context.Context, c, d dbus.ObjectPath) error {
@@ -160,11 +168,30 @@ func TestApplyConfirm(t *testing.T) {
 	if _, err := Apply(context.Background(), nm, plan, time.Minute); err == nil {
 		t.Error("второе изменение поверх неподтверждённого")
 	}
-	if n, err := Confirm(context.Background(), nm, "eth0"); n != 1 || err != nil {
+	nm.calls = nil
+	if n, err := Confirm(context.Background(), nm, params("netplan-eth0")); n != 1 || err != nil {
 		t.Errorf("confirm: %d %v", n, err)
 	}
-	if n, _ := Confirm(context.Background(), nm, "eth0"); n != 0 {
+	// Профиль на диск — до снятия checkpoint.
+	if strings.Join(nm.calls, ",") != "save /c/2,destroy /cp/1" {
+		t.Errorf("подтверждение: %v", nm.calls)
+	}
+	if n, _ := Confirm(context.Background(), nm, params("netplan-eth0")); n != 0 {
 		t.Error("подтверждать нечего")
+	}
+}
+
+// Не удалось записать профиль — checkpoint остаётся, откат по таймеру сработает.
+func TestConfirmSaveFails(t *testing.T) {
+	nm := newFake()
+	plan, _ := Prepare(context.Background(), nm, params("netplan-eth0"))
+	Apply(context.Background(), nm, plan, time.Minute)
+	nm.failSave = true
+	if _, err := Confirm(context.Background(), nm, params("netplan-eth0")); err == nil {
+		t.Error("ожидалась ошибка записи")
+	}
+	if len(nm.checkpoints) != 1 {
+		t.Error("checkpoint должен остаться")
 	}
 }
 

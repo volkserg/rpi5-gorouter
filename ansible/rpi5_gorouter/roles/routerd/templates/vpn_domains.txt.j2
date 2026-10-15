@@ -1,0 +1,5 @@
+# {{ ansible_managed }}
+# Адреса, трафик к которым идёт через туннель: домен, IP или подсеть.
+{% for entry in routerd_vpn_entries %}
+{{ entry }}
+{% endfor %}

@@ -56,7 +56,8 @@ dnscrypt-proxy, GOST.
   не знает, его зона ответственности заканчивается на локальном слушателе GOST или `tun0`.
 - Все ключи `router.conf` имеют значения по умолчанию: адресация LAN (`IFACE`,
   `ROUTER_IP`, `RPI5_IP`, `LAN_SUBNET`, пул, `DNS1`/`DNS2`, `NM_CONN`) и ключи
-  `VPN_MODE`, `VPN_FAILOVER`, `VPN_PORT`, `VPN_TUN`, `QUIC_REJECT`,
+  `VPN_MODE`, `VPN_FAILOVER`, `VPN_PORT`, `VPN_TUN`, `VPN_SERVICE`
+  (`gost-run.service`), `QUIC_REJECT`,
   `VPN_DYNAMIC_TIMEOUT` (24h), `DNS_UPSTREAM` (`127.0.0.1#5353`), `FILTER_AAAA`
   (`vpn`), `DNS_ECS` (`yes`), `DHCP_ENABLED` (`yes`), `DHCP_LEASE_TIME` (`24h`),
   `LOCAL_DOMAIN` (`lan`), `PIHOLE_MANAGE` (`yes`), `PIHOLE_TOML`
@@ -112,7 +113,10 @@ dnscrypt-proxy, GOST.
 - `apply-network`: по аналогии с `nmcli con mod … && nmcli con up`, но через
   D-Bus NetworkManager. Подключение — `NM_CONN`, иначе ethernet-подключение
   `IFACE`. Перед изменением — `CheckpointCreate` на устройство с откатом через 60 с;
-  профиль обновляется (`Update2`, на диск — для netplan-профиля NM пишет и YAML),
+  профиль обновляется только в памяти NM (`Update2` с `IN_MEMORY`; на диске —
+  прежний), `--confirm` записывает его на диск (`Save`; для netplan-профиля NM
+  пишет и YAML) и только потом снимает checkpoint — перезагрузка или отключение
+  питания до подтверждения возвращают прежние настройки,
   устаревший ключ `addresses` удаляется (иначе NM игнорирует `address-data` и
   `gateway`), DNS — ключом `dns`; затем активация и ожидание состояния
   «активировано». Ошибка — немедленный откат. Успех — нужно подтвердить
@@ -123,6 +127,14 @@ dnscrypt-proxy, GOST.
   в namespace не работает) — только юнит-тесты с подделкой D-Bus.
 - Перезагрузка сохраняет адреса в `vpn_dynamic`; если параметры set'ов изменились
   (например, таймаут), таблица пересоздаётся — не все ядра обновляют их на месте.
+- Отключение питания: routerd, Pi-hole и `dnscrypt-proxy.socket` в автозапуске;
+  `routerd.service` и пример `gost-run.service` — `Restart=on-failure` без
+  ограничения частоты запусков (`StartLimitIntervalSec=0`). routerd слушает DNS
+  с `IP_FREEBIND` (стартует до назначения адреса) и при старте заново строит
+  таблицу nftables. Аренды, списки и `pihole.toml` заменяются атомарно:
+  временный файл, `fsync`, `rename`, `fsync` каталога. Если после правки
+  `pihole.toml` systemd отклонил запуск Pi-hole (частые перезапуски), routerd
+  повторяет запуск — остановленный Pi-hole означал бы отсутствие DNS в LAN.
 - `send_redirects=0` выставляется и для `all`, и для `IFACE`: ядро объединяет
   их по OR, и иначе RPi рассылала бы клиентам ICMP redirect на роутер.
 
@@ -158,7 +170,7 @@ dnscrypt-proxy, GOST.
 
 GOST-клиенту в режимах `tproxy` и `route` нужен `CAP_NET_ADMIN`
 (`IP_TRANSPARENT`, создание tun), в `tproxy` ещё `CAP_NET_BIND_SERVICE`
-(ответ на UDP с исходного порта сервера): юнит GOST ведёт пользователь, пример —
+(ответ на UDP с исходного порта сервера): юнит GOST (`VPN_SERVICE`) ведёт пользователь, пример —
 `deploy/systemd/gost-run.service`.
 
 | Ключ | Значения | По умолчанию |
@@ -167,6 +179,7 @@ GOST-клиенту в режимах `tproxy` и `route` нужен `CAP_NET_AD
 | `VPN_FAILOVER` | `closed` — туннель упал, VPN-адреса недоступны; `open` — снять перехват, идти напрямую | `closed` |
 | `VPN_PORT` | порт слушателя GOST | `1080` |
 | `VPN_TUN` | интерфейс для `route` | `tun0` |
+| `VPN_SERVICE` | systemd-юнит клиента туннеля для `rsc start/stop/status/logs` | `gost-run.service` |
 | `QUIC_REJECT` | отклонять UDP/443 к VPN-адресам | `yes` |
 
 Удалённая сторона (под управлением пользователя): nginx `stream` с выбором по SNI
@@ -197,6 +210,7 @@ internal/daemon/      routerd run: применение, sd_notify (notify-reloa
 deploy/systemd/       routerd.service, пример gost-run.service
 deploy/config/        примеры router.conf (все ключи), vpn_domains.txt, dns_override.txt
 install.sh            установка/обновление на RPi (bash — единственное место вне Go)
+ansible/rpi5_gorouter/ коллекция Ansible: роль routerd (установка из релиза, конфиги из инвентаря)
 testbed/              стенд: lab.sh, эталон ядра RPi, конфиги стенда и узлов туннеля
 ```
 
@@ -220,7 +234,10 @@ Linux-специфичное — под `//go:build linux`, проверяетс
   трафик не утёк в настоящий интернет).
 
 Стенд автономный, проверка пакетами (tcpdump) и журналами сервисов,
-короткие таймауты set. Поднимается и сносится одним скриптом; первым шагом
+короткие таймауты set. Поднимается и сносится одним скриптом; топология —
+юнит `lab-topology.service`, а сервисы стенда, как на RPi, в автозапуске, так
+что после перезагрузки машины стенд поднимается сам (`lab.sh test-boot`
+проверяет это и перезапуск после SIGKILL); первым шагом
 сверяет nft-опции ядра машины с эталоном боевого ядра RPi
 (`testbed/kernel-rpi.txt`: 6.12 rpt, 16K-страницы).
 

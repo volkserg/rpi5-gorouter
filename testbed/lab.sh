@@ -33,6 +33,9 @@
 #   lab.sh test           сквозные проверки текущего режима (после up + install)
 #   lab.sh test-all       все режимы подряд
 #   lab.sh test-install   проверки install.sh: повторный запуск, --force, отказы
+#   lab.sh test-ansible   роль Ansible во всех режимах (после make dist)
+#   lab.sh test-boot      после перезагрузки машины стенда: автозапуск, аварийный перезапуск
+#   lab.sh test-no-tunnel routerd без клиента туннеля, затем GOST без перезапуска routerd
 #   lab.sh test-idle [с]  долгое простаивающее соединение через туннель (по умолчанию 120 с)
 #   lab.sh status         адреса и маршруты во всех namespace
 #   lab.sh exec <ns> cmd  выполнить команду в namespace (rpi, client, router, inet, entry, exit, lan)
@@ -83,7 +86,7 @@ cmd_bootstrap() {
     apt-get update -q
     DEBIAN_FRONTEND=noninteractive apt-get install -y -q \
         nftables iproute2 iputils-ping tcpdump busybox dnsutils curl kmod dnsmasq-base \
-        nginx-light libnginx-mod-stream shellcheck zsh
+        nginx-light libnginx-mod-stream shellcheck zsh ansible-core
     # nginx нужен только узлам туннеля в их namespace (lab.sh install).
     systemctl disable --now nginx 2>/dev/null || true
     install_gost
@@ -371,6 +374,9 @@ selftest() {
     [[ ${ok} -eq 1 ]] || die "связность стенда нарушена"
 }
 
+# Вспомогательные юниты стенда (сервисы «интернета» и удалённых узлов).
+LAB_UNITS=(lab-dns-public lab-dohd lab-dns-corp lab-dns-vpn lab-web-direct lab-web-vpn
+    lab-nginx-entry lab-gost-entry lab-nginx-exit lab-gost-exit)
 # Юниты стенда: управляемые routerd (имена как на бою) и вспомогательные.
 STAND_UNITS=(gost-run routerd pihole-FTL dnscrypt-proxy dnscrypt-proxy.socket
     lab-dns-corp lab-dns-vpn lab-dns-public lab-dohd lab-web-direct lab-web-vpn
@@ -410,11 +416,47 @@ unit() {
     cat >"${UNIT_DIR}/$1.service" <<EOF
 [Unit]
 Description=Стенд routerd: $1
+After=lab-topology.service
+Requires=lab-topology.service
 [Service]
 NetworkNamespacePath=/run/netns/lab-$2
 ExecStart=$3
 Restart=on-failure
+[Install]
+WantedBy=multi-user.target
 EOF
+}
+
+# after_topology <юнит> — юнит с NetworkNamespacePath стартует только после
+# того, как lab-topology.service создал namespace (в том числе при загрузке).
+after_topology() {
+    mkdir -p "${UNIT_DIR}/$1.d"
+    printf '[Unit]\nAfter=lab-topology.service\nRequires=lab-topology.service\n' >"${UNIT_DIR}/$1.d/lab-topology.conf"
+}
+
+# Топология стенда как юнит: при загрузке машины namespace создаются раньше
+# сервисов стенда, и стенд поднимается сам — как RPi после включения питания.
+# Скрипт копируется: каталог репозитория может быть ещё не смонтирован.
+install_topology_unit() {
+    install -D -m 0755 "${LAB_DIR}/lab.sh" /usr/local/lib/routerd-lab/lab.sh
+    cat >"${UNIT_DIR}/lab-topology.service" <<EOF
+[Unit]
+Description=Стенд routerd: network namespace и veth
+# Раньше sockets.target: dnscrypt-proxy.socket стенда живёт в namespace rpi.
+DefaultDependencies=no
+After=local-fs.target systemd-modules-load.service
+Before=sockets.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/routerd-lab/lab.sh boot-up
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable lab-topology.service >/dev/null 2>&1
+    # Уже поднятый стенд: юнит считается запущенным, boot-up ничего не делает.
+    systemctl start lab-topology.service
 }
 
 # in_ns <юнит> <namespace> — drop-in, запускающий боевой юнит в namespace стенда.
@@ -429,6 +471,7 @@ in_ns() {
 NetworkNamespacePath=/run/netns/lab-$2
 BindReadOnlyPaths=/etc/netns/lab-$2/resolv.conf:/etc/resolv.conf
 EOF
+    after_topology "$1.service"
 }
 
 # Публичные тестовые зоны (их видит DoH-сервер): TTL 120, A и AAAA.
@@ -542,14 +585,9 @@ pihole_key() { pihole-FTL --config "$1" 2>/dev/null; }
 pihole_key_is() { [[ "$(pihole_key "$1")" == "$2" ]]; }
 pihole_ready() { systemctl is-active --quiet pihole-FTL && nsx rpi dig +short +time=1 +tries=1 -p 5353 pi.hole @127.0.0.1 >/dev/null; }
 
-# run_installer <параметры> — install.sh репозитория. На стенде юниты работают в
-# namespace (drop-in lab-netns.conf), поэтому автозапуск при загрузке VM, когда
-# namespace ещё нет, выключается.
+# run_installer <параметры> — install.sh репозитория.
 run_installer() {
-    local rc=0
-    ROUTERD_BIN="${REPO_DIR}/bin/routerd-linux-arm64" "${REPO_DIR}/install.sh" "$@" || rc=$?
-    systemctl disable routerd.service >/dev/null 2>&1
-    return "${rc}"
+    ROUTERD_BIN="${REPO_DIR}/bin/routerd-linux-arm64" "${REPO_DIR}/install.sh" "$@"
 }
 
 ctl() { ROUTERD_CONFIG_DIR="${CONFIG_DIR}" /usr/local/bin/rsc "$@"; }
@@ -561,6 +599,7 @@ cmd_install() {
     [[ -x "${bin}" ]] || die "нет ${bin} — соберите: make build-rpi"
     command -v gost >/dev/null || die "нет gost — lab.sh bootstrap"
 
+    install_topology_unit
     mkdir -p "${CONFIG_DIR}"
     install -m 0644 "${LAB_DIR}"/conf/{router.conf,vpn_domains.txt,dns_override.txt} "${CONFIG_DIR}/"
 
@@ -600,9 +639,14 @@ cmd_install() {
     printf '[Service]\nBindReadOnlyPaths=%s/gost-resolv.conf:/etc/resolv.conf\n' "${LAB_ETC}" \
         >"${UNIT_DIR}/gost-run.service.d/lab-resolv.conf"
 
+    # Юниты в namespace стенда — после топологии; всё в автозапуске, как на RPi.
+    local u
+    for u in dnscrypt-proxy.socket dnscrypt-proxy.service gost-run.service; do
+        after_topology "${u}"
+    done
     systemctl daemon-reload
-    systemctl restart lab-dns-public lab-dohd lab-dns-corp lab-dns-vpn lab-web-direct lab-web-vpn \
-        lab-nginx-entry lab-gost-entry lab-nginx-exit lab-gost-exit
+    systemctl enable "${LAB_UNITS[@]}" dnscrypt-proxy.socket pihole-FTL routerd gost-run >/dev/null 2>&1
+    systemctl restart "${LAB_UNITS[@]}"
     systemctl restart dnscrypt-proxy.socket pihole-FTL
 
     # restart, а не start: при переустановке должен заработать новый бинарник.
@@ -710,6 +754,7 @@ seen_by() {
 }
 set_has() { nsx rpi nft list set ip router_service "$1" | grep -q "$2"; }
 resolve() { nsx "$1" dig +short +time=2 +tries=1 "$2" "@$3"; }
+resolves_to() { [[ "$(resolve "$1" "$2" 192.168.3.2)" == "$3" ]]; }
 fetch() { nsx client curl -fsS --max-time 5 "http://$1/" >/dev/null 2>&1 || true; }
 eq() { [[ "$1" == "$2" ]]; }
 not() { ! "$@"; }
@@ -883,7 +928,8 @@ cmd_test() {
         ctl reload-vpn-domains >/dev/null
         expect "reload исправляет расхождение в pihole.toml" wait_for 60 pihole_key_is dns.upstreams "[ 127.0.0.1#5053 ]"
         wait_for 60 pihole_ready || true
-        expect "после исправления цепочка через Pi-hole работает" eq "$(resolve client vpn.example 192.168.3.2)" 203.0.113.20
+        # FTL только что перезапущен — первый ответ через всю цепочку может опоздать.
+        expect "после исправления цепочка через Pi-hole работает" wait_for 10 resolves_to client vpn.example 203.0.113.20
     fi
 
     log_info "Маршрутизация"
@@ -976,6 +1022,153 @@ cmd_test_all() {
     cmd_mode redirect closed
     [[ ${#failed[@]} -eq 0 ]] || die "не пройдены режимы: ${failed[*]}"
     log_info "Все режимы пройдены."
+}
+
+#===============================================================================
+# test-ansible: роль volkserg.rpi5_gorouter.routerd во всех режимах
+#===============================================================================
+cmd_test_ansible() {
+    need_root
+    ip netns list | grep -q '^lab-rpi' || die "сначала lab.sh up && lab.sh install"
+    command -v ansible-playbook >/dev/null || die "нет ansible-playbook — lab.sh bootstrap"
+    local archive coll out mode first=1 failed=()
+    archive="$(ls -t "${REPO_DIR}"/dist/routerd-*-linux-arm64.tar.gz 2>/dev/null | head -1)"
+    [[ -n "${archive}" ]] || die "нет архива — соберите: make dist"
+    # Коллекция ставится так же, как у пользователя, — ansible-galaxy из каталога.
+    coll="$(mktemp -d)"
+    ansible-galaxy collection install "${REPO_DIR}/ansible/rpi5_gorouter" -p "${coll}" --force >/dev/null ||
+        die "ansible-galaxy не установил коллекцию"
+    log_info "Коллекция установлена, архив ${archive##*/}"
+
+    # Стенд: routerd — в namespace rpi (юнит пишет роль); клиент туннеля —
+    # юнит стенда под режим, как его ставят вручную.
+    in_ns routerd rpi
+
+    play() {
+        ANSIBLE_COLLECTIONS_PATH="${coll}" ANSIBLE_NOCOLOR=1 ANSIBLE_STDOUT_CALLBACK=default \
+            ansible-playbook -i localhost, "${LAB_DIR}/ansible/site.yml" \
+            -e "lab_archive=${archive}" -e "lab_mode=$1" 2>&1
+    }
+    recap() { grep -oE "$1=[0-9]+" <<<"$2" | head -1 | cut -d= -f2; }
+
+    for mode in redirect tproxy route; do
+        fails=0
+        log_info "Роль, режим ${mode}"
+        gost_client "${mode}"
+        systemctl daemon-reload
+        systemctl restart gost-run
+        out="$(play "${mode}")"
+        expect "роль отработала без ошибок" eq "$(recap failed "${out}") $(recap unreachable "${out}")" "0 0" ||
+            echo "${out}" | grep -E 'FAILED|fatal|ERROR' | head -5
+        if [[ ${first} -eq 1 ]]; then
+            first=0
+            out="$(play "${mode}")"
+            expect "повторный запуск ничего не меняет" eq "$(recap changed "${out}")" 0 ||
+                echo "${out}" | grep -B1 '^changed:' | head -10
+        fi
+        expect "rsc и router_service_ctl → routerd" \
+            eq "$(readlink /usr/local/bin/rsc) $(readlink /usr/local/bin/router_service_ctl)" "routerd routerd"
+        wait_for 15 web_ok vpn.example || true
+        [[ ${fails} -eq 0 ]] || failed+=("${mode}: роль")
+        (cmd_test) || failed+=("${mode}")
+    done
+    rm -rf "${coll}"
+    [[ ${#failed[@]} -eq 0 ]] || die "не пройдено: ${failed[*]}"
+    log_info "Роль: все режимы пройдены."
+}
+
+#===============================================================================
+# test-no-tunnel: routerd без клиента туннеля, затем GOST без перезапуска routerd
+#===============================================================================
+cmd_test_no_tunnel() {
+    need_root
+    local mode failed=() aside="${UNIT_DIR}/gost-run.service.lab-aside"
+    for mode in redirect tproxy route; do
+        fails=0
+        cmd_mode "${mode}" closed >/dev/null
+        log_info "Режим ${mode}: GOST ещё не установлен"
+        # Как до установки GOST: юнита нет.
+        systemctl disable --now gost-run >/dev/null 2>&1
+        mv "${UNIT_DIR}/gost-run.service" "${aside}"
+        systemctl daemon-reload
+        expect "rsc restart без юнита туннеля — успешно" ctl restart
+        expect "routerd работает, туннель недоступен" wait_for 10 status_has "туннель недоступен"
+        expect "клиент получает адрес по DHCP" dhcp_client client
+        wait_for 60 pihole_ready || true
+        expect "DNS работает" wait_for 30 resolves_to client direct.example 203.0.113.10
+        fetch direct.example
+        expect "интернет напрямую работает" eq "$(seen_by lab-web-direct)" 198.51.100.2
+        resolve client vpn.example 192.168.3.2 >/dev/null || true
+        expect "closed: адреса из списка недоступны (не утекают напрямую)" not web_ok vpn.example
+        conf_set VPN_FAILOVER open
+        ctl reload-vpn-domains >/dev/null
+        fetch vpn.example
+        expect "open: адреса из списка идут напрямую" eq "$(seen_by lab-web-vpn)" 198.51.100.2
+        conf_set VPN_FAILOVER closed
+        ctl reload-vpn-domains >/dev/null
+
+        log_info "Режим ${mode}: GOST установлен, routerd не перезапускается"
+        local pid
+        pid="$(systemctl show -P MainPID routerd)"
+        mv "${aside}" "${UNIT_DIR}/gost-run.service"
+        systemctl daemon-reload
+        systemctl enable --now gost-run >/dev/null 2>&1
+        expect "routerd подхватил туннель сам" wait_for 15 status_has "туннель доступен"
+        resolve client vpn.example 192.168.3.2 >/dev/null || true
+        wait_for 15 web_ok vpn.example || true
+        fetch vpn.example
+        expect "адреса из списка идут через туннель" eq "$(seen_by lab-web-vpn)" 198.51.100.6
+        expect "routerd не перезапускался" eq "$(systemctl show -P MainPID routerd)" "${pid}"
+        [[ ${fails} -eq 0 ]] || failed+=("${mode}")
+    done
+    cmd_mode redirect closed >/dev/null
+    [[ ${#failed[@]} -eq 0 ]] || die "не пройдены режимы: ${failed[*]}"
+    log_info "Без туннеля и с туннелем после установки: все режимы пройдены."
+}
+
+#===============================================================================
+# boot-up (из lab-topology.service) и test-boot: стенд после перезагрузки
+#===============================================================================
+cmd_boot_up() {
+    ip netns list | grep -q '^lab-rpi' && return 0
+    cmd_up
+}
+
+# test-boot — после перезагрузки машины стенда (orbctl restart routerd-lab):
+# всё поднялось само, аренды пережили перезагрузку; затем — после аварийного
+# завершения (SIGKILL) сервисы перезапускаются сами.
+cmd_test_boot() {
+    need_root
+    fails=0
+    local u lease_ip
+    log_info "После загрузки"
+    expect "топология поднята при загрузке" systemctl is-active --quiet lab-topology
+    for u in dnscrypt-proxy.socket pihole-FTL routerd gost-run; do
+        expect "${u} в автозапуске и работает" bash -c "systemctl is-enabled --quiet ${u} && systemctl is-active --quiet ${u}"
+    done
+    expect "routerd готов (READY=1)" wait_for 60 status_has "работает"
+    expect "таблица nftables routerd на месте" table_present
+    # Аренда клиента (client-id udhcpc — 01 + MAC), записанная до перезагрузки.
+    lease_ip="$(grep -B2 '"client_id": "01020000000050"' /var/lib/routerd/leases.json | sed -n 's/.*"ip": "\(.*\)".*/\1/p' | head -1)"
+    expect "аренда клиента пережила перезагрузку (${lease_ip:-нет})" test -n "${lease_ip}"
+    dhcp_client client -r "${lease_ip}" >/dev/null || true
+    expect "клиент снова получил тот же адрес" eq "$(client_ip)" "${lease_ip}"
+    wait_for 60 pihole_ready || true
+    expect "DNS через Pi-hole работает" wait_for 30 resolves_to client vpn.example 203.0.113.20
+    expect "туннель работает" wait_for 30 web_ok vpn.example
+
+    log_info "После аварийного завершения (SIGKILL)"
+    for u in routerd pihole-FTL gost-run; do
+        systemctl kill -s KILL "${u}"
+        expect "${u} перезапущен systemd" wait_for 30 systemctl is-active --quiet "${u}"
+    done
+    expect "routerd снова готов" wait_for 60 status_has "работает"
+    expect "таблица nftables восстановлена" table_present
+    wait_for 60 pihole_ready || true
+    expect "DNS через Pi-hole работает" wait_for 30 resolves_to client vpn.example 203.0.113.20
+    expect "туннель работает" wait_for 30 web_ok vpn.example
+    [[ ${fails} -eq 0 ]] || die "проверок не пройдено: ${fails}"
+    log_info "Загрузка и аварийный перезапуск: все проверки пройдены. Полный набор — lab.sh test-all."
 }
 
 #===============================================================================
@@ -1077,6 +1270,10 @@ mode)
 test) cmd_test ;;
 test-all) cmd_test_all ;;
 test-install) cmd_test_install ;;
+test-ansible) cmd_test_ansible ;;
+test-boot) cmd_test_boot ;;
+test-no-tunnel) cmd_test_no_tunnel ;;
+boot-up) cmd_boot_up ;;
 test-idle)
     shift
     cmd_test_idle "$@"

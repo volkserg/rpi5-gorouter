@@ -1,0 +1,33 @@
+---
+- name: Изменения сети
+  ansible.builtin.debug:
+    msg: "{{ _routerd_net.stdout_lines }}"
+
+# В фоне: соединение Ansible может оборваться, если меняется адрес RPi.
+# Подтверждения нет — через 60 с NetworkManager вернёт прежние настройки.
+- name: Применить сеть (rsc apply-network)
+  ansible.builtin.command: "{{ routerd_bin_dir }}/rsc apply-network"
+  async: 90
+  poll: 0
+  register: _routerd_apply
+  changed_when: true
+
+- name: Переподключение к RPi
+  ansible.builtin.meta: reset_connection
+
+- name: RPi снова доступен
+  ansible.builtin.wait_for_connection:
+    delay: 5
+    timeout: 50
+
+- name: Применение сети завершилось успешно
+  ansible.builtin.async_status:
+    jid: "{{ _routerd_apply.ansible_job_id }}"
+  register: _routerd_apply_result
+  until: _routerd_apply_result.finished
+  retries: 20
+  delay: 3
+
+- name: Подтвердить изменения сети (rsc apply-network --confirm)
+  ansible.builtin.command: "{{ routerd_bin_dir }}/rsc apply-network --confirm"
+  changed_when: true

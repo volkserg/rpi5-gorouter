@@ -1,0 +1,29 @@
+---
+# Те же значения, что testbed/conf: адреса совпадают с топологией lab.sh.
+routerd_archive: "{{ lab_archive }}"
+routerd_conf:
+  IFACE: eth0
+  ROUTER_IP: 192.168.3.1
+  RPI5_IP: 192.168.3.2
+  LAN_SUBNET: 192.168.3.0/24
+  LAN_POOL_START: 192.168.3.100
+  LAN_POOL_END: 192.168.3.250
+  DNS1: 203.0.113.53
+  DNS2: 203.0.113.53
+  VPN_MODE: "{{ lab_mode | default('redirect') }}"
+  VPN_FAILOVER: closed
+  VPN_PORT: 1080
+  QUIC_REJECT: true
+  VPN_DYNAMIC_TIMEOUT: 30s
+  DNS_UPSTREAM: "127.0.0.1#5353"
+routerd_vpn_entries:
+  - vpn.example
+routerd_dns_overrides:
+  - domain: corp.example
+    server: 203.0.113.53
+routerd_gost_chain:
+  - addr: data.entry.example:443
+    username: lab
+    password: entry-secret
+# NetworkManager на стенде нет.
+routerd_apply_network: false

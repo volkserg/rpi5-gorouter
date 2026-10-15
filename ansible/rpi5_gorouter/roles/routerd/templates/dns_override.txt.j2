@@ -1,0 +1,5 @@
+# {{ ansible_managed }}
+# Домены, которые разрешает указанный DNS-сервер, минуя Pi-hole: домен сервер[:порт]
+{% for o in routerd_dns_overrides %}
+{{ o.domain }} {{ o.server }}
+{% endfor %}

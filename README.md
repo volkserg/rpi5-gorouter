@@ -30,32 +30,43 @@ NetworkManager управляются через netlink и D-Bus.
 make test        # юнит-тесты (macOS или Linux)
 make build-rpi   # bin/routerd-linux-arm64
 make dist        # dist/routerd-<версия>-linux-arm64.tar.gz для установки
+make release     # релиз на GitHub (тег vX.Y.Z): архив + SHA256SUMS
 ```
 
 ## Установка
 
-Raspberry Pi OS / Debian 13 (arm64), systemd, NetworkManager:
+Raspberry Pi OS / Debian 13 (arm64), systemd, NetworkManager. Два способа:
+Ansible-роль (ниже) или `install.sh` из архива.
+
+### Ansible
+
+Коллекция `volkserg.rpi5_gorouter` с ролью `routerd` лежит в
+[ansible/rpi5_gorouter](ansible/rpi5_gorouter/README.md) и ставится через
+`ansible-galaxy` из git; routerd роль берёт из релиза GitHub той же версии.
+`router.conf` и списки задаются переменными инвентаря.
+
+### install.sh
 
 ```bash
 scp dist/routerd-*-linux-arm64.tar.gz pi@rpi:
 ssh pi@rpi 'tar -xzf routerd-*-linux-arm64.tar.gz && cd routerd-*-linux-arm64 && sudo ./install.sh'
 ```
 
-`install.sh` ставит недостающее — dnscrypt-proxy (apt), Pi-hole (официальный
-установщик, сразу на порту 5353), GOST (последний релиз с GitHub, проверка
-sha256) — и сам routerd: бинарник, команды `rsc` и `router_service_ctl`,
-`routerd.service` (с автозапуском), автодополнение bash/zsh. Дальше —
+`install.sh` ставит недостающее — dnscrypt-proxy (apt) и Pi-hole (официальный
+установщик, сразу на порту 5353) — и сам routerd: бинарник, команды `rsc` и `router_service_ctl`,
+`routerd.service`, автодополнение bash/zsh; routerd, Pi-hole и dnscrypt-proxy —
+в автозапуске (после отключения питания RPi поднимается сама). Дальше —
 `check-config`, `apply-network --dry-run` и запуск стека.
 
 Повторный запуск — обновление: бинарник и `routerd.service` заменяются,
-конфиги в `/usr/local/etc/router_service` и `gost-run.service` — нет (при
-первой установке это примеры из `deploy/`). Параметры:
+конфиги в `/usr/local/etc/router_service` — нет (при первой установке это
+примеры из `deploy/config`). Параметры:
 
 | Параметр | |
 |---|---|
-| `--force` | заменить конфиги примерами, прежние — в `*.bak.<время>` (`gost-run.service` не трогается никогда) |
+| `--force` | заменить конфиги примерами, прежние — в `*.bak.<время>` |
 | `--no-start` | только установить |
-| `--skip-deps` | не ставить Pi-hole, dnscrypt-proxy и GOST |
+| `--skip-deps` | не ставить Pi-hole и dnscrypt-proxy |
 | `ROUTERD_BIN=<путь>` | бинарник не из `bin/` рядом со скриптом |
 
 Конфиг dnscrypt-proxy остаётся вашим: установщик только направляет
@@ -64,11 +75,18 @@ sha256) — и сам routerd: бинарник, команды `rsc` и `router
 обычный файл, а не symlink на routerd, установщик останавливается и ничего не меняет.
 
 После установки:
-1. Указать свой сервер в `gost-run.service` (`sudo systemctl edit --full gost-run`)
-   под `VPN_MODE` — варианты слушателя в комментарии юнита, сервер — [docs/TUNNEL.md](docs/TUNNEL.md).
+1. Клиент туннеля GOST ставится и настраивается отдельно: бинарник `gost` в
+   `/usr/local/bin` и юнит `gost-run.service` под `VPN_MODE` — пример в
+   [deploy/systemd/gost-run.service](deploy/systemd/gost-run.service), схема — [docs/TUNNEL.md](docs/TUNNEL.md).
 2. Выключить DHCP на домашнем роутере (если `DHCP_ENABLED=yes`).
 3. Если `apply-network --dry-run` показал изменения — `sudo rsc
    apply-network`, проверить доступ и `--confirm`.
+
+Туннель можно настроить позже: без клиента GOST routerd работает (DHCP, DNS,
+NAT, Pi-hole), не работает только отправка трафика в туннель. Адреса из
+`vpn_domains.txt` при этом недоступны (`VPN_FAILOVER=closed`, по умолчанию) или
+идут напрямую (`VPN_FAILOVER=open`). Когда юнит клиента (`VPN_SERVICE`) запущен,
+routerd подхватывает туннель сам за пару секунд — перезапускать его не нужно.
 
 Все ключи `router.conf` с описанием и значениями по умолчанию —
 [deploy/config/router.conf](deploy/config/router.conf).
@@ -117,6 +135,9 @@ orb -m routerd-lab sudo ./testbed/lab.sh install        # через install.sh 
 orb -m routerd-lab sudo ./testbed/lab.sh test           # текущий режим
 orb -m routerd-lab sudo ./testbed/lab.sh test-all       # redirect, tproxy, route
 orb -m routerd-lab sudo ./testbed/lab.sh test-install   # повторный запуск, --force, отказы
+orb -m routerd-lab sudo ./testbed/lab.sh test-ansible   # роль Ansible во всех режимах (после make dist)
+orbctl restart routerd-lab && orb -m routerd-lab sudo ./testbed/lab.sh test-boot  # после перезагрузки
+orb -m routerd-lab sudo ./testbed/lab.sh test-no-tunnel # без клиента туннеля, затем GOST без перезапуска
 orb -m routerd-lab sudo ./testbed/lab.sh test-idle 300  # долгое простаивающее соединение (отдельно: долго)
 orb -m routerd-lab sudo ./testbed/lab.sh mode tproxy open
 ```

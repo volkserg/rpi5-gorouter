@@ -1,0 +1,10 @@
+---
+# Производные значения (не для переопределения).
+_routerd_dnscrypt: "{{ routerd_conf.DNSCRYPT_ADDR | default('127.0.0.1#5053') }}"
+_routerd_pihole_port: "{{ (routerd_conf.DNS_UPSTREAM | default('127.0.0.1#5353')).split('#') | last }}"
+_routerd_archive_name: >-
+  {{ routerd_archive | basename if routerd_archive
+     else 'routerd-v' ~ routerd_version ~ '-linux-arm64.tar.gz' }}
+_routerd_dir: "{{ routerd_cache_dir }}/{{ _routerd_archive_name | regex_replace('\\.tar\\.gz$', '') }}"
+_routerd_release_url: "{{ routerd_release_base }}/v{{ routerd_version }}"
+_routerd_ctl_names: [rsc, router_service_ctl]

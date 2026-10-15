@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+
+	"github.com/volkserg/rpi5-gorouter/internal/fsutil"
 )
 
 // ReadVPN читает vpn_domains.txt. Отсутствующий файл — не ошибка, а пустой
@@ -102,5 +104,5 @@ func writeAtomic(path string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	return fsutil.Rename(tmp.Name(), path)
 }

@@ -1,0 +1,24 @@
+---
+- name: Проверки
+  ansible.builtin.import_tasks: preflight.yml
+
+- name: Зависимости
+  ansible.builtin.import_tasks: deps.yml
+  when: routerd_install_deps
+
+- name: Установка routerd
+  ansible.builtin.import_tasks: install.yml
+
+- name: Конфиги
+  ansible.builtin.import_tasks: config.yml
+
+- name: Применить изменения до запуска
+  ansible.builtin.meta: flush_handlers
+
+- name: Сервисы
+  ansible.builtin.import_tasks: service.yml
+  when: routerd_start
+
+- name: Адрес RPi в NetworkManager
+  ansible.builtin.import_tasks: network.yml
+  when: routerd_apply_network

@@ -1,7 +1,9 @@
 // Package netcfg применяет статический адрес RPi через NetworkManager по
 // D-Bus с защитой Checkpoint: если изменение не подтверждено
 // за отведённое время (например, пропал доступ по SSH), NetworkManager сам
-// возвращает прежние настройки.
+// возвращает прежние настройки. До подтверждения изменение живёт только в
+// памяти NetworkManager: если RPi перезагрузится (например, пропало питание),
+// она поднимется с прежним профилем с диска.
 package netcfg
 
 import (
@@ -25,7 +27,10 @@ type NM interface {
 	DeviceByIface(ctx context.Context, iface string) (dbus.ObjectPath, error)
 	Connections(ctx context.Context) ([]dbus.ObjectPath, error)
 	GetSettings(ctx context.Context, conn dbus.ObjectPath) (Settings, error)
+	// UpdateSettings меняет профиль только в памяти (на диске — прежний).
 	UpdateSettings(ctx context.Context, conn dbus.ObjectPath, s Settings) error
+	// Save записывает профиль из памяти на диск.
+	Save(ctx context.Context, conn dbus.ObjectPath) error
 	Activate(ctx context.Context, conn, dev dbus.ObjectPath) error
 	CheckpointCreate(ctx context.Context, dev dbus.ObjectPath, rollback time.Duration) (dbus.ObjectPath, error)
 	CheckpointDestroy(ctx context.Context, cp dbus.ObjectPath) error
@@ -95,17 +100,35 @@ func Apply(ctx context.Context, nm NM, plan *Plan, rollback time.Duration) (dbus
 	return cp, nil
 }
 
-// Confirm подтверждает изменения (удаляет checkpoint'ы устройства).
-func Confirm(ctx context.Context, nm NM, iface string) (int, error) {
-	return forCheckpoints(ctx, nm, iface, nm.CheckpointDestroy)
+// Confirm подтверждает изменения: записывает профиль на диск и удаляет
+// checkpoint'ы устройства. Запись — первой: если она не удалась, checkpoint
+// остаётся и NetworkManager откатит изменения по таймеру.
+func Confirm(ctx context.Context, nm NM, p Params) (int, error) {
+	dev, err := nm.DeviceByIface(ctx, p.Iface)
+	if err != nil {
+		return 0, err
+	}
+	cps, err := nm.Checkpoints(ctx, dev)
+	if err != nil || len(cps) == 0 {
+		return 0, err
+	}
+	conn, _, err := findConnection(ctx, nm, p)
+	if err != nil {
+		return 0, err
+	}
+	if err := nm.Save(ctx, conn); err != nil {
+		return 0, fmt.Errorf("запись профиля на диск: %w", err)
+	}
+	for _, cp := range cps {
+		if err := nm.CheckpointDestroy(ctx, cp); err != nil {
+			return 0, err
+		}
+	}
+	return len(cps), nil
 }
 
 // Rollback немедленно откатывает неподтверждённые изменения.
 func Rollback(ctx context.Context, nm NM, iface string) (int, error) {
-	return forCheckpoints(ctx, nm, iface, nm.CheckpointRollback)
-}
-
-func forCheckpoints(ctx context.Context, nm NM, iface string, f func(context.Context, dbus.ObjectPath) error) (int, error) {
 	dev, err := nm.DeviceByIface(ctx, iface)
 	if err != nil {
 		return 0, err
@@ -115,7 +138,7 @@ func forCheckpoints(ctx context.Context, nm NM, iface string, f func(context.Con
 		return 0, err
 	}
 	for _, cp := range cps {
-		if err := f(ctx, cp); err != nil {
+		if err := nm.CheckpointRollback(ctx, cp); err != nil {
 			return 0, err
 		}
 	}

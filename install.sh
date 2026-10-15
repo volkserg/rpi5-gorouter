@@ -5,16 +5,19 @@
 #
 # Что делает:
 #   1. Ставит недостающее: dnscrypt-proxy (apt), Pi-hole (официальный
-#      установщик), GOST (релиз с GitHub, проверка sha256).
+#      установщик).
 #   2. Ставит routerd, команды rsc и router_service_ctl, routerd.service, автодополнение
-#      bash/zsh; конфиги и gost-run.service — примеры, только если их нет.
+#      bash/zsh; конфиги — примеры, только если их нет.
 #   3. check-config, apply-network --dry-run, включение и запуск.
+#
+# Клиент туннеля (GOST, юнит VPN_SERVICE — по умолчанию gost-run.service)
+# ставится и настраивается отдельно — docs/TUNNEL.md.
 #
 # Использование (из распакованного архива или клона репозитория):
 #   sudo ./install.sh              установка или обновление
 #   sudo ./install.sh --force      заменить конфиги примерами (старые → *.bak.<время>)
 #   sudo ./install.sh --no-start   не запускать после установки
-#   sudo ./install.sh --skip-deps  не ставить Pi-hole, dnscrypt-proxy и GOST
+#   sudo ./install.sh --skip-deps  не ставить Pi-hole и dnscrypt-proxy
 #
 # Бинарник: bin/routerd-linux-arm64 рядом со скриптом (make build-rpi / make dist)
 # или ROUTERD_BIN=<путь>.
@@ -32,7 +35,6 @@ ZSH_COMPLETION="/usr/local/share/zsh/site-functions/_rsc"
 # Команды управления — symlink'и на routerd.
 CTL_NAMES=(rsc router_service_ctl)
 PIHOLE_INSTALLER="https://install.pi-hole.net"
-GOST_RELEASES="https://api.github.com/repos/go-gost/gost/releases/latest"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 
 FORCE=false
@@ -121,22 +123,6 @@ done
 #===============================================================================
 # 1. Зависимости
 #===============================================================================
-install_gost() {
-    local tmp url sums
-    tmp="$(mktemp -d)"
-    curl -fsSL "${GOST_RELEASES}" -o "${tmp}/release.json" || die "не удалось получить список релизов GOST: ${GOST_RELEASES}"
-    url="$(grep -oE '"browser_download_url": *"[^"]*linux_arm64\.tar\.gz"' "${tmp}/release.json" | grep -oE 'https://[^"]+' | head -1)"
-    sums="$(grep -oE '"browser_download_url": *"[^"]*checksums\.txt"' "${tmp}/release.json" | grep -oE 'https://[^"]+' | head -1)"
-    [[ -n "${url}" && -n "${sums}" ]] || die "в релизе GOST нет linux_arm64 или checksums.txt"
-    curl -fsSL "${url}" -o "${tmp}/${url##*/}" || die "не удалось скачать ${url}"
-    curl -fsSL "${sums}" -o "${tmp}/checksums.txt" || die "не удалось скачать ${sums}"
-    (cd "${tmp}" && grep " ${url##*/}\$" checksums.txt | sha256sum -c --quiet) || die "контрольная сумма ${url##*/} не совпала"
-    tar -xzf "${tmp}/${url##*/}" -C "${tmp}" gost
-    install -m 0755 "${tmp}/gost" "${BIN_DIR}/gost"
-    rm -rf "${tmp}"
-    log_info "  gost: $("${BIN_DIR}/gost" -V 2>&1 | head -1)"
-}
-
 install_pihole() {
     local tmp
     # Автоматическая установка Pi-hole v6 требует готового pihole.toml.
@@ -200,12 +186,6 @@ if [[ "${DEPS}" == true ]]; then
     else
         install_pihole
     fi
-    if command -v gost >/dev/null; then
-        log_info "  gost: есть"
-    else
-        log_info "  GOST: последний релиз с GitHub..."
-        install_gost
-    fi
 fi
 
 #===============================================================================
@@ -227,14 +207,6 @@ done
 
 install -m 0644 "${SRC_DIR}/deploy/systemd/routerd.service" "${UNIT_DIR}/routerd.service"
 log_info "  ${UNIT_DIR}/routerd.service"
-# gost-run.service — конфиг туннеля пользователя: только если юнита нет.
-if unit_exists gost-run.service; then
-    log_info "  gost-run.service: есть, не меняется"
-else
-    install -m 0644 "${SRC_DIR}/deploy/systemd/gost-run.service" "${UNIT_DIR}/gost-run.service"
-    log_warn "  ${UNIT_DIR}/gost-run.service — пример: укажите свой сервер в ExecStart"
-fi
-
 mkdir -p "$(dirname "${BASH_COMPLETION}")" "$(dirname "${ZSH_COMPLETION}")"
 "${BIN_DIR}/routerd" completion bash >"${BASH_COMPLETION}"
 # bash-completion подгружает файл по имени команды — второе имя ссылкой.
@@ -259,8 +231,14 @@ else
     log_warn "apply-network --dry-run: ${out}"
 fi
 
-systemctl enable routerd.service >/dev/null 2>&1
-log_info "routerd.service включён в автозапуск"
+# Всё, без чего шлюз не работает, — в автозапуске: после отключения питания
+# RPi поднимается сама. Pi-hole и dnscrypt-proxy — если установлены.
+for u in dnscrypt-proxy.socket pihole-FTL.service routerd.service; do
+    if unit_exists "${u}"; then
+        systemctl enable "${u}" >/dev/null 2>&1
+        log_info "${u}: в автозапуске"
+    fi
+done
 
 if [[ "${START}" == true ]]; then
     log_step "Запуск"
@@ -271,8 +249,14 @@ echo
 log_info "Готово: ${VERSION}"
 [[ "${NETWORK_PENDING}" == true ]] &&
     log_warn "Адрес RPi в NetworkManager отличается от router.conf: sudo rsc apply-network, затем --confirm"
-grep -q 'vpn.example.com' "${UNIT_DIR}/gost-run.service" 2>/dev/null &&
-    log_warn "gost-run.service — ещё пример: sudo systemctl edit --full gost-run, затем rsc restart"
+# Юнит клиента туннеля — VPN_SERVICE (суффикс .service можно не писать).
+gost_unit="$(conf_get VPN_SERVICE gost-run.service)"
+[[ "${gost_unit}" == *.* ]] || gost_unit="${gost_unit}.service"
+if ! unit_exists "${gost_unit}"; then
+    log_warn "Клиент туннеля не настроен (${gost_unit}, VPN_SERVICE): docs/TUNNEL.md, пример — deploy/systemd/gost-run.service"
+elif ! systemctl is-enabled --quiet "${gost_unit}"; then
+    log_warn "${gost_unit} не в автозапуске: sudo systemctl enable ${gost_unit}"
+fi
 [[ "$(conf_get DHCP_ENABLED yes)" == yes ]] &&
     log_warn "DHCP раздаёт routerd — выключите DHCP-сервер на роутере $(conf_get ROUTER_IP 192.168.3.1)"
 echo "Состояние: rsc status    Журнал: rsc logs    Справка: rsc help"

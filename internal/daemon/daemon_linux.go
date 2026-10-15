@@ -482,7 +482,12 @@ func (d *daemon) syncPihole(cfg *config.Config) {
 		d.Log.Error("правка конфига Pi-hole", "ошибка", err)
 	}
 	if running {
-		if err := m.Start(ctx, services.UnitPihole); err != nil {
+		// Остановленный Pi-hole — нет DNS во всей LAN: запуск повторяется,
+		// если systemd отклонил его (частые перезапуски, start-limit).
+		err := services.StartRetry(ctx, m, services.UnitPihole, 4, 15*time.Second, func(attempt int, err error) {
+			d.Log.Warn("запуск Pi-hole после правки конфига, повтор через 15 с", "попытка", attempt, "ошибка", err)
+		})
+		if err != nil {
 			d.Log.Error("запуск Pi-hole после правки конфига", "ошибка", err)
 		}
 	}

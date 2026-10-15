@@ -1,0 +1,61 @@
+---
+- name: Пакет dnscrypt-proxy
+  ansible.builtin.apt:
+    name: dnscrypt-proxy
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Каталог drop-in dnscrypt-proxy.socket
+  ansible.builtin.file:
+    path: /etc/systemd/system/dnscrypt-proxy.socket.d
+    state: directory
+    mode: "0755"
+
+# Конфиг dnscrypt-proxy остаётся вашим — роль задаёт только адрес сокета.
+- name: Адрес dnscrypt-proxy.socket — DNSCRYPT_ADDR
+  ansible.builtin.template:
+    src: dnscrypt-socket.conf.j2
+    dest: /etc/systemd/system/dnscrypt-proxy.socket.d/routerd.conf
+    mode: "0644"
+  notify: [daemon-reload, restart dnscrypt-proxy.socket]
+
+- name: Pi-hole установлен?
+  ansible.builtin.stat:
+    path: /usr/local/bin/pihole
+  register: _routerd_pihole
+
+- name: Pi-hole
+  when: not _routerd_pihole.stat.exists
+  block:
+    - name: Каталог /etc/pihole
+      ansible.builtin.file:
+        path: /etc/pihole
+        state: directory
+        mode: "0755"
+
+    # Автоматическая установка Pi-hole v6 требует готового pihole.toml;
+    # порт и upstream — сразу, чтобы Pi-hole не занял :53.
+    - name: Начальный pihole.toml
+      ansible.builtin.template:
+        src: pihole.toml.j2
+        dest: /etc/pihole/pihole.toml
+        mode: "0644"
+        force: false
+
+    - name: Каталог загрузок
+      ansible.builtin.file:
+        path: "{{ routerd_cache_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Установщик Pi-hole
+      ansible.builtin.get_url:
+        url: https://install.pi-hole.net
+        dest: "{{ routerd_cache_dir }}/pihole-install.sh"
+        mode: "0755"
+
+    - name: Установка Pi-hole (несколько минут)
+      ansible.builtin.command:
+        cmd: bash {{ routerd_cache_dir }}/pihole-install.sh --unattended
+        creates: /usr/local/bin/pihole

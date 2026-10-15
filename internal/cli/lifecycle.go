@@ -34,7 +34,7 @@ func cmdStart(x *ctx, _ []string) int {
 	}
 	x.okf("Запуск router_service...")
 	return x.withManager(func(ctx context.Context, m services.Manager) int {
-		if err := services.StartStack(ctx, m, x.stackLogger()); err != nil {
+		if err := services.StartStack(ctx, m, x.gostUnit(), x.stackLogger()); err != nil {
 			x.errf("Ошибка запуска: %v", err)
 			return 1
 		}
@@ -49,7 +49,7 @@ func cmdStop(x *ctx, _ []string) int {
 	}
 	x.out("%sОстановка router_service...%s", x.c.Red, x.c.NC)
 	return x.withManager(func(ctx context.Context, m services.Manager) int {
-		if err := services.StopStack(ctx, m); err != nil {
+		if err := services.StopStack(ctx, m, x.gostUnit()); err != nil {
 			x.errf("Ошибка остановки: %v", err)
 			return 1
 		}
@@ -58,11 +58,14 @@ func cmdStop(x *ctx, _ []string) int {
 	})
 }
 
+// cmdRestart запускает стек и после неудачной остановки: иначе routerd мог
+// бы остаться выключенным (нет DHCP и DNS в LAN).
 func cmdRestart(x *ctx, a []string) int {
-	if rc := cmdStop(x, a); rc != 0 {
-		return rc
+	rcStop := cmdStop(x, a)
+	if rcStart := cmdStart(x, a); rcStart != 0 {
+		return rcStart
 	}
-	return cmdStart(x, a)
+	return rcStop
 }
 
 // dnscryptSocket сверяет адрес dnscrypt-proxy.socket с DNSCRYPT_ADDR —
@@ -117,13 +120,24 @@ func (x *ctx) piholeConfig(cfg *config.Config) {
 }
 
 // logUnits — юниты, чьи журналы показывает logs.
-var logUnits = []string{services.UnitRouterd, services.UnitGost, services.UnitDNSCrypt, services.UnitPihole}
+func (x *ctx) logUnits() []string {
+	return []string{services.UnitRouterd, x.gostUnit(), services.UnitDNSCrypt, services.UnitPihole}
+}
+
+// gostUnit — юнит клиента туннеля из router.conf (VPN_SERVICE). Если конфиг
+// не читается — значение по умолчанию: stop, status и logs работают всегда.
+func (x *ctx) gostUnit() string {
+	if cfg, _, err := config.Load(x.routerConf()); err == nil {
+		return cfg.VPNService
+	}
+	return services.DefaultUnitGost
+}
 
 func cmdLogs(x *ctx, _ []string) int {
 	x.out("%sЛоги router_service:%s", x.c.Cyan, x.c.NC)
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
-	for i, u := range logUnits {
+	for i, u := range x.logUnits() {
 		if i > 0 {
 			x.out("")
 		}
@@ -144,7 +158,7 @@ func cmdStatus(x *ctx, _ []string) int {
 	if m, err := x.Services(ctx); err != nil {
 		x.out("  %s?%s systemd недоступен: %v", x.c.Yellow, x.c.NC, err)
 	} else {
-		sts, err := m.States(ctx, services.StatusUnits...)
+		sts, err := m.States(ctx, services.StatusUnits(x.gostUnit())...)
 		if err != nil {
 			x.out("  %s?%s ошибка запроса состояния: %v", x.c.Yellow, x.c.NC, err)
 		}

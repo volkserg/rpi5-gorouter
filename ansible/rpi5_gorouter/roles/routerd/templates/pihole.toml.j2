@@ -1,0 +1,5 @@
+# Начальный конфиг для автоматической установки Pi-hole; дальше ключи
+# цепочки DNS сверяет routerd (PIHOLE_MANAGE).
+[dns]
+  upstreams = ["{{ _routerd_dnscrypt }}"]
+  port = {{ _routerd_pihole_port }}

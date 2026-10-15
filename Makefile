@@ -1,7 +1,7 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build build-rpi build-lab dist test vet fmt
+.PHONY: all build build-rpi build-lab dist release test vet fmt
 
 all: vet test build-rpi
 
@@ -18,6 +18,17 @@ dist: build-rpi
 	COPYFILE_DISABLE=1 tar -C dist -czf dist/$(DIST).tar.gz $(DIST)
 	rm -rf dist/$(DIST)
 	@echo dist/$(DIST).tar.gz
+
+# Релиз на GitHub (нужен gh): тег vX.Y.Z на коммите без изменений, версия
+# совпадает с ansible/rpi5_gorouter/galaxy.yml. Роль Ansible скачивает архив
+# и проверяет его по SHA256SUMS.
+release: dist
+	@case "$(VERSION)" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "нужен тег vX.Y.Z на HEAD без изменений (сейчас $(VERSION))"; exit 1;; esac
+	@case "$(VERSION)" in *-*) echo "нужен тег vX.Y.Z на HEAD без изменений (сейчас $(VERSION))"; exit 1;; esac
+	@grep -qx 'version: $(VERSION:v%=%)' ansible/rpi5_gorouter/galaxy.yml || \
+		{ echo "ansible/rpi5_gorouter/galaxy.yml: версия не $(VERSION:v%=%)"; exit 1; }
+	cd dist && shasum -a 256 $(DIST).tar.gz >SHA256SUMS
+	gh release create $(VERSION) dist/$(DIST).tar.gz dist/SHA256SUMS --title "routerd $(VERSION)" --notes "routerd $(VERSION): архив для install.sh и роли Ansible volkserg.rpi5_gorouter.routerd."
 
 # Вспомогательные программы стенда (linux/arm64).
 build-lab:

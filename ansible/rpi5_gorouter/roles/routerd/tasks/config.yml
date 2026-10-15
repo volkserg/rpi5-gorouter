@@ -1,0 +1,38 @@
+---
+- name: Каталог конфигов
+  ansible.builtin.file:
+    path: "{{ routerd_config_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Файл router.conf
+  ansible.builtin.template:
+    src: router.conf.j2
+    dest: "{{ routerd_config_dir }}/router.conf"
+    mode: "0644"
+    backup: true
+  notify: reload routerd
+
+- name: Файл vpn_domains.txt
+  ansible.builtin.template:
+    src: vpn_domains.txt.j2
+    dest: "{{ routerd_config_dir }}/vpn_domains.txt"
+    mode: "0644"
+  when: routerd_vpn_entries is not none
+  notify: reload routerd
+
+- name: Файл dns_override.txt
+  ansible.builtin.template:
+    src: dns_override.txt.j2
+    dest: "{{ routerd_config_dir }}/dns_override.txt"
+    mode: "0644"
+  when: routerd_dns_overrides is not none
+  notify: reload routerd
+
+# Ошибка в конфиге останавливает роль до перезапуска routerd.
+- name: Проверка конфигов (rsc check-config)
+  ansible.builtin.command: "{{ routerd_bin_dir }}/rsc check-config"
+  environment:
+    ROUTERD_CONFIG_DIR: "{{ routerd_config_dir }}"
+    NO_COLOR: "1"
+  changed_when: false

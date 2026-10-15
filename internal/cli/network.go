@@ -41,9 +41,16 @@ func cmdApplyNetwork(x *ctx, args []string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
 
+	params := netcfg.Params{
+		Iface:    cfg.Iface,
+		ConnName: cfg.NMConn,
+		Address:  netip.PrefixFrom(cfg.RPi5IP, cfg.LANSubnet.Bits()),
+		Gateway:  cfg.RouterIP,
+		DNS:      cfg.DNS,
+	}
 	switch mode {
 	case "--confirm":
-		n, err := netcfg.Confirm(ctx, nm, cfg.Iface)
+		n, err := netcfg.Confirm(ctx, nm, params)
 		switch {
 		case err != nil:
 			x.errf("Ошибка подтверждения: %v", err)
@@ -51,7 +58,7 @@ func cmdApplyNetwork(x *ctx, args []string) int {
 		case n == 0:
 			x.notef("Неподтверждённых изменений сети нет.")
 		default:
-			x.okf("Изменения сети подтверждены.")
+			x.okf("Изменения сети подтверждены и записаны на диск.")
 		}
 		return 0
 	case "--rollback":
@@ -68,13 +75,7 @@ func cmdApplyNetwork(x *ctx, args []string) int {
 		return 0
 	}
 
-	plan, err := netcfg.Prepare(ctx, nm, netcfg.Params{
-		Iface:    cfg.Iface,
-		ConnName: cfg.NMConn,
-		Address:  netip.PrefixFrom(cfg.RPi5IP, cfg.LANSubnet.Bits()),
-		Gateway:  cfg.RouterIP,
-		DNS:      cfg.DNS,
-	})
+	plan, err := netcfg.Prepare(ctx, nm, params)
 	if err != nil {
 		x.errf("Ошибка: %v", err)
 		return 1
@@ -99,7 +100,8 @@ func cmdApplyNetwork(x *ctx, args []string) int {
 	x.okf("Сеть применена: %s/%d, шлюз %s.", cfg.RPi5IP, cfg.LANSubnet.Bits(), cfg.RouterIP)
 	x.notef("Проверьте доступ к RPi (например, SSH на %s) и в течение %d с подтвердите:", cfg.RPi5IP, int(networkRollback.Seconds()))
 	x.notef("  sudo %s apply-network --confirm", x.Prog)
-	x.notef("Без подтверждения NetworkManager сам вернёт прежние настройки.")
+	x.notef("Без подтверждения NetworkManager сам вернёт прежние настройки; до подтверждения")
+	x.notef("они только в памяти — после перезагрузки RPi поднимется с прежними.")
 	// Новый адрес RPi нужен DNS и DHCP routerd.
 	code, _ := x.applyLists()
 	return code
