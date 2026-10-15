@@ -35,7 +35,8 @@
 ## Требования
 
 - Raspberry Pi 5, Raspberry Pi OS / Debian 13 (arm64), NetworkManager.
-- Подключение к LAN одним портом `eth0`, статический адрес RPi.
+- Подключение к LAN одним портом `eth0`; статический адрес RPi задаёт
+  `rsc apply-network` из `router.conf`.
 - Сервер VPN-туннеля (GOST) — для отправки трафика в корпоративную сеть;
   routerd работает и без него, см. [docs/TUNNEL.md](docs/TUNNEL.md).
 
