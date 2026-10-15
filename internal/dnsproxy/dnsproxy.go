@@ -200,6 +200,9 @@ func (s *Server) handle(w dns.ResponseWriter, req *dns.Msg) *dns.Msg {
 	_, _, isVPN := r.VPN.Lookup(q.Name)
 
 	switch {
+	case isMDNS(q.Name):
+		// .local — зона mDNS (RFC 6762): в DNS не пересылается.
+		return authoritative(req, dns.RcodeNameError)
 	case q.Qtype == dns.TypePTR && bogusPriv(q.Name):
 		// bogus-priv: обратные запросы для частных сетей не уходят наружу.
 		return reply(req, dns.RcodeNameError)
@@ -361,11 +364,9 @@ func localAnswer(req *dns.Msg, q dns.Question, z LocalZone) (*dns.Msg, bool) {
 	name := domain.Normalize(q.Name)
 	zone := z.Domain()
 
-	if q.Qtype == dns.TypePTR {
-		a, ok := reverseAddr(name)
-		if !ok {
-			return nil, false
-		}
+	// PTR вида d.c.b.a.in-addr.arpa — по арендам; прочие PTR (например,
+	// lb._dns-sd._udp.lan) — как любой запрос к зоне.
+	if a, ok := reverseAddr(name); ok && q.Qtype == dns.TypePTR {
 		host, ok := z.LookupAddr(a)
 		if !ok {
 			return nil, false // дальше — bogus-priv или upstream
@@ -397,6 +398,12 @@ func localAnswer(req *dns.Msg, q dns.Question, z LocalZone) (*dns.Msg, bool) {
 		})
 	}
 	return m, true
+}
+
+// isMDNS — имя в зоне local.
+func isMDNS(name string) bool {
+	name = domain.Normalize(name)
+	return name == "local" || strings.HasSuffix(name, ".local")
 }
 
 func authoritative(req *dns.Msg, rcode int) *dns.Msg {

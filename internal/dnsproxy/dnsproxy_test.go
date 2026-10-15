@@ -419,6 +419,16 @@ func TestLocalZone(t *testing.T) {
 	if resp := p.handle(writer{remote: lanUDP}, query("99.3.168.192.in-addr.arpa", dns.TypePTR, false)); resp.Rcode != dns.RcodeNameError {
 		t.Errorf("PTR без аренды: %d", resp.Rcode)
 	}
+	// Обнаружение сервисов (DNS-SD) в зоне: не PTR адреса, но и не в upstream —
+	// иначе Pi-hole вернёт его routerd по revServers и запрос зациклится.
+	if resp := p.handle(writer{remote: lanUDP}, query("lb._dns-sd._udp.lan", dns.TypePTR, false)); resp.Rcode != dns.RcodeNameError || !resp.Authoritative {
+		t.Errorf("PTR lb._dns-sd._udp.lan: NXDOMAIN, got %v", resp)
+	}
+	for _, name := range []string{"local", "printer.local", "_ipp._tcp.Local"} {
+		if resp := p.handle(writer{remote: lanUDP}, query(name, dns.TypeSOA, false)); resp.Rcode != dns.RcodeNameError {
+			t.Errorf("%s: NXDOMAIN, got %d", name, resp.Rcode)
+		}
+	}
 	if n := len(up.requests()); n != 0 {
 		t.Errorf("локальная зона не должна уходить в upstream: %d запросов", n)
 	}
