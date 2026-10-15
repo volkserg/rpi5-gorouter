@@ -1,6 +1,6 @@
-# dnscrypt-proxy стенда: как config/dnscrypt-proxy.toml в rpi5-router
-# (socket activation, только DoH, без кэша), но единственный сервер —
-# DoH стенда doh.example, закреплённый по хэшу CA стенда. @STAMP@ подставляет lab.sh.
+# dnscrypt-proxy стенда: socket activation, только DoH, без кэша; единственный
+# сервер — DoH стенда doh.example, закреплённый по хэшу CA стенда.
+# @STAMP@ подставляет lab.sh.
 listen_addresses = []
 server_names = ['lab-doh']
 

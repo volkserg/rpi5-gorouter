@@ -1,0 +1,43 @@
+# GOST входного узла стенда: TLS + HTTP с авторизацией,
+# защитой от сканирования (probeResist: запрос без авторизации получает
+# ответ веб-сайта узла) и цепочкой к выходному узлу.
+# udp: true — UDP поверх HTTP (расширение GOST) для режимов tproxy и route.
+services:
+- name: entry
+  addr: "127.0.0.1:9443"
+  handler:
+    type: http
+    chain: to-exit
+    auth:
+      username: lab
+      password: entry-secret
+    metadata:
+      udp: true
+      knock: check.example
+      probeResist: "web:https://www.entry.example"
+  listener:
+    type: tls
+    tls:
+      certFile: @PKI@/entry-fullchain.crt
+      keyFile: @PKI@/entry.key
+  metadata:
+    proxyProtocol: 1
+chains:
+- name: to-exit
+  hops:
+  - name: hop-0
+    nodes:
+    - name: exit
+      addr: "data.exit.example:443"
+      connector:
+        type: http
+        auth:
+          username: lab
+          password: exit-secret
+      dialer:
+        type: tls
+        tls:
+          secure: true
+          serverName: data.exit.example
+log:
+  level: info

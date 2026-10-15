@@ -1,0 +1,35 @@
+# GOST выходного узла стенда (на узле — /etc/gost/gost.yml).
+services:
+# Туннель: TLS + HTTP с авторизацией за nginx (proxy_protocol).
+- name: tunnel
+  addr: "127.0.0.1:9443"
+  handler:
+    type: http
+    auth:
+      username: lab
+      password: exit-secret
+    metadata:
+      udp: true            # UDP поверх HTTP: режимы tproxy и route
+      probeResist: "web:https://www.exit.example"
+      knock: check.example
+      readTimeout: -1      # не ограничивать ожидание запроса (по умолчанию 15s)
+      idleTimeout: 0       # не рвать простаивающие соединения
+  listener:
+    type: tls
+    tls:
+      certFile: @PKI@/exit-fullchain.crt
+      keyFile: @PKI@/exit.key
+  metadata:
+    proxyProtocol: 1       # адрес клиента от nginx
+# tun-сервер для режима route: доступен только через туннель.
+- name: tun
+  addr: "127.0.0.1:8421"
+  handler:
+    type: tun
+  listener:
+    type: tun
+    metadata:
+      name: tun0
+      net: 192.168.123.1/24
+log:
+  level: info

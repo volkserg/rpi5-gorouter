@@ -1,7 +1,9 @@
 #!/bin/bash
 #===============================================================================
 # lab.sh — тестовый стенд routerd: network namespace + veth внутри одной
-# Linux-VM (Debian 13 arm64, OrbStack). Docker не используется.
+# Linux-машины arm64 (Debian 13, root). Стенд ставит Pi-hole, nginx и др. и
+# меняет сетевые настройки, поэтому лучше отдельная VM: на Mac — OrbStack,
+# на Linux — любая VM (или выделенная машина).
 #
 # Топология:
 #
@@ -14,9 +16,14 @@
 #   lab-inet  — «интернет»: 203.0.113.10 (прямой сайт), 203.0.113.20 (сайт за туннелем),
 #        │      203.0.113.53 (DNS corp.example), 203.0.113.54 (DNS тестовых зон),
 #        │      203.0.113.55 (DoH doh.example); основной namespace VM в схеме не участвует
-#   lab-exit  — удалённый узел туннеля 198.51.100.6/30 (GOST-сервер)
+#   lab-entry — входной узел туннеля 198.51.100.10/30 (nginx + GOST, цепочка к exit)
+#   lab-exit  — выходной узел туннеля 198.51.100.6/30 (nginx + GOST + tun-сервер)
 #
-# Использование (внутри VM, от root):
+# Туннель — как на бою: GOST-клиент на RPi → TLS (SNI data.entry.example) →
+# nginx stream (выбор по SNI, proxy_protocol) → GOST http с авторизацией и
+# защитой от сканирования (probeResist) → тем же путём на exit → интернет.
+#
+# Использование (внутри Linux-машины стенда, от root):
 #   lab.sh bootstrap      установить пакеты стенда (нужен интернет один раз)
 #   lab.sh bootstrap-dns  установить настоящие Pi-hole и dnscrypt-proxy (интернет)
 #   lab.sh check-kernel   сверить ядро VM с эталоном боевой RPi + пробные правила
@@ -26,9 +33,11 @@
 #   lab.sh test           сквозные проверки текущего режима (после up + install)
 #   lab.sh test-all       все режимы подряд
 #   lab.sh test-install   проверки install.sh: повторный запуск, --force, отказы
+#   lab.sh test-idle [с]  долгое простаивающее соединение через туннель (по умолчанию 120 с)
 #   lab.sh status         адреса и маршруты во всех namespace
-#   lab.sh exec <ns> cmd  выполнить команду в namespace (rpi, client, router, inet, exit, lan)
+#   lab.sh exec <ns> cmd  выполнить команду в namespace (rpi, client, router, inet, entry, exit, lan)
 #
+# Бинарники (make build-rpi build-lab) собираются на macOS или Linux.
 # С Mac: orb -m routerd-lab sudo <путь-к-репозиторию>/testbed/lab.sh <команда>
 #===============================================================================
 
@@ -40,7 +49,7 @@ ETALON="${LAB_DIR}/kernel-rpi.txt"
 CONFIG_DIR="/usr/local/etc/router_service"
 UNIT_DIR="/etc/systemd/system"
 SRV_DIR="/srv/lab"
-NAMESPACES=(lan router rpi client client2 inet exit)
+NAMESPACES=(lan router rpi client client2 inet entry exit)
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -73,7 +82,10 @@ cmd_bootstrap() {
     log_info "Установка пакетов стенда..."
     apt-get update -q
     DEBIAN_FRONTEND=noninteractive apt-get install -y -q \
-        nftables iproute2 iputils-ping tcpdump busybox dnsutils curl kmod dnsmasq-base
+        nftables iproute2 iputils-ping tcpdump busybox dnsutils curl kmod dnsmasq-base \
+        nginx-light libnginx-mod-stream shellcheck zsh
+    # nginx нужен только узлам туннеля в их namespace (lab.sh install).
+    systemctl disable --now nginx 2>/dev/null || true
     install_gost
     log_info "Готово."
 }
@@ -305,7 +317,13 @@ EOF
     done
     nsx inet sysctl -qw net.ipv4.ip_forward=1
 
-    # Удалённый узел туннеля.
+    # Входной узел туннеля (к нему подключается RPi).
+    veth_pair entry eth0 inet e0
+    nsx entry ip addr add 198.51.100.10/30 dev eth0
+    nsx inet ip addr add 198.51.100.9/30 dev e0
+    nsx entry ip route add default via 198.51.100.9
+
+    # Выходной узел туннеля.
     veth_pair exit eth0 inet x0
     nsx exit ip addr add 198.51.100.6/30 dev eth0
     nsx inet ip addr add 198.51.100.5/30 dev x0
@@ -348,13 +366,15 @@ selftest() {
     check "rpi → интернет через NAT роутера" nsx rpi ping -c1 -W1 203.0.113.10
     check "rpi → удалённый узел" nsx rpi ping -c1 -W1 198.51.100.6
     check "exit → интернет" nsx exit ping -c1 -W1 203.0.113.20
+    check "entry → exit" nsx entry ping -c1 -W1 198.51.100.6
     check "основной namespace VM не видит стенд" bash -c '! ping -c1 -W1 203.0.113.10'
     [[ ${ok} -eq 1 ]] || die "связность стенда нарушена"
 }
 
 # Юниты стенда: управляемые routerd (имена как на бою) и вспомогательные.
-STAND_UNITS=(gost-run routerd-dnsmasq routerd pihole-FTL dnscrypt-proxy dnscrypt-proxy.socket
-    lab-dns-corp lab-dns-vpn lab-dns-public lab-dohd lab-web-direct lab-web-vpn lab-gost-exit)
+STAND_UNITS=(gost-run routerd pihole-FTL dnscrypt-proxy dnscrypt-proxy.socket
+    lab-dns-corp lab-dns-vpn lab-dns-public lab-dohd lab-web-direct lab-web-vpn
+    lab-nginx-entry lab-gost-entry lab-nginx-exit lab-gost-exit)
 
 cmd_down() {
     need_root
@@ -416,7 +436,8 @@ EOF
 # не спрашивая upstream (как и на lan, internal, home.arpa, invalid, onion).
 PUBLIC_ZONES="--address=/vpn.example/203.0.113.20 --address=/vpn.example/2001:db8::20 \
 --address=/direct.example/203.0.113.10 --address=/direct.example/2001:db8::10 \
---address=/ads.example/203.0.113.99 --address=/#/"
+--address=/ads.example/203.0.113.99 \
+--address=/entry.example/198.51.100.10 --address=/exit.example/198.51.100.6 --address=/#/"
 # --address=/#/ — на всё остальное NXDOMAIN, как настоящий резолвер: иначе
 # dnscrypt-proxy считает сервер «lying resolver» и не использует его.
 PKI_DIR="${SRV_DIR}/pki"
@@ -425,8 +446,8 @@ LAB_ETC="/etc/routerd-lab"
 # pki: собственный CA стенда и сертификат DoH-сервера doh.example (203.0.113.55).
 # CA добавляется в доверенные VM — dnscrypt-proxy проверяет цепочку по системным.
 pki() {
-    # Сертификат выпущен под текущее имя DoH — ничего не делаем.
-    if [[ -f "${PKI_DIR}/doh-fullchain.crt" ]] &&
+    # Сертификаты выпущены под текущие имена — ничего не делаем.
+    if [[ -f "${PKI_DIR}/exit-fullchain.crt" ]] &&
         openssl x509 -noout -ext subjectAltName -in "${PKI_DIR}/doh.crt" 2>/dev/null | grep -q "DNS:doh.example"; then
         return
     fi
@@ -442,6 +463,17 @@ pki() {
     # Сервер отдаёт цепочку целиком: dnscrypt-proxy ищет закреплённый хэш (CA)
     # среди сертификатов, присланных сервером.
     cat "${PKI_DIR}/doh.crt" "${PKI_DIR}/ca.crt" >"${PKI_DIR}/doh-fullchain.crt"
+    # Узлы туннеля: один сертификат на веб-сайт узла и GOST (data.*).
+    local n
+    for n in entry exit; do
+        openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+            -subj "/CN=www.${n}.example" -keyout "${PKI_DIR}/${n}.key" -out "${PKI_DIR}/${n}.csr" 2>/dev/null
+        printf 'subjectAltName=DNS:www.%s.example,DNS:data.%s.example\nextendedKeyUsage=serverAuth\n' "${n}" "${n}" >"${PKI_DIR}/${n}.ext"
+        openssl x509 -req -in "${PKI_DIR}/${n}.csr" -CA "${PKI_DIR}/ca.crt" -CAkey "${PKI_DIR}/ca.key" \
+            -CAcreateserial -days 825 -extfile "${PKI_DIR}/${n}.ext" -out "${PKI_DIR}/${n}.crt" 2>/dev/null
+        cat "${PKI_DIR}/${n}.crt" "${PKI_DIR}/ca.crt" >"${PKI_DIR}/${n}-fullchain.crt"
+    done
+    # nginx читает ключи от root, GOST тоже — права по умолчанию достаточны.
     install -m 0644 "${PKI_DIR}/ca.crt" /usr/local/share/ca-certificates/routerd-lab-ca.crt
     update-ca-certificates >/dev/null
     log_info "CA стенда создан: ${PKI_DIR}/ca.crt"
@@ -449,7 +481,7 @@ pki() {
 
 install_dns_chain() {
     local dohd="${REPO_DIR}/bin/dohd-linux-arm64"
-    [[ -x "${dohd}" ]] || die "нет ${dohd} — соберите на Mac: make build-lab"
+    [[ -x "${dohd}" ]] || die "нет ${dohd} — соберите: make build-lab"
     install -m 0755 "${dohd}" /usr/local/bin/lab-dohd
     install -m 0755 "${REPO_DIR}/bin/dhcpprobe-linux-arm64" /usr/local/bin/lab-dhcpprobe
     pki
@@ -466,7 +498,7 @@ install_dns_chain() {
         return
     fi
 
-    # dnscrypt-proxy: socket activation на 127.0.0.1:5053, как override в rpi5-router;
+    # dnscrypt-proxy: socket activation на 127.0.0.1:5053;
     # единственный сервер — DoH стенда, закреплённый по хэшу CA.
     local stamp
     stamp="$(/usr/local/bin/lab-dohd -stamp -ca "${PKI_DIR}/ca.crt" -addr 203.0.113.55 -host doh.example)"
@@ -526,7 +558,7 @@ cmd_install() {
     need_root
     ip netns list | grep -q '^lab-rpi' || die "сначала lab.sh up"
     local bin="${REPO_DIR}/bin/routerd-linux-arm64"
-    [[ -x "${bin}" ]] || die "нет ${bin} — соберите на Mac: make build-rpi"
+    [[ -x "${bin}" ]] || die "нет ${bin} — соберите: make build-rpi"
     command -v gost >/dev/null || die "нет gost — lab.sh bootstrap"
 
     mkdir -p "${CONFIG_DIR}"
@@ -552,13 +584,25 @@ cmd_install() {
     unit lab-web-direct inet "/bin/busybox httpd -f -vv -p 203.0.113.10:80 -h ${SRV_DIR}/direct"
     unit lab-web-vpn inet "/bin/busybox httpd -f -vv -p 203.0.113.20:80 -h ${SRV_DIR}/vpn"
 
-    # Удалённый узел: relay с UDP (bind=true) и tun-сервер для режима route.
-    unit lab-gost-exit exit "/usr/local/bin/gost -L relay+ws://:8080?path=/tunnel&bind=true \
--L tun://:8421?net=192.168.123.1/24&name=tun0"
+    # Удалённые узлы туннеля.
+    install_node entry
+    install_node exit
+    sed "s|@PKI@|${PKI_DIR}|g" "${LAB_DIR}/nodes/gost-entry.yaml" >"${SRV_DIR}/node-entry/gost.yaml"
+    unit lab-gost-entry entry "/usr/local/bin/gost -C ${SRV_DIR}/node-entry/gost.yaml"
+    in_ns lab-gost-entry entry
+    sed "s|@PKI@|${PKI_DIR}|g" "${LAB_DIR}/nodes/gost-exit.yaml" >"${SRV_DIR}/node-exit/gost.yaml"
+    unit lab-gost-exit exit "/usr/local/bin/gost -C ${SRV_DIR}/node-exit/gost.yaml"
+    in_ns lab-gost-exit exit
     gost_client "$(conf_get VPN_MODE)"
+    # GOST-клиент резолвит адрес входного узла через routerd, как на бою (gost-resolv.conf).
+    mkdir -p "${UNIT_DIR}/gost-run.service.d" "${LAB_ETC}"
+    echo "nameserver 127.0.0.1" >"${LAB_ETC}/gost-resolv.conf"
+    printf '[Service]\nBindReadOnlyPaths=%s/gost-resolv.conf:/etc/resolv.conf\n' "${LAB_ETC}" \
+        >"${UNIT_DIR}/gost-run.service.d/lab-resolv.conf"
 
     systemctl daemon-reload
-    systemctl restart lab-dns-public lab-dohd lab-dns-corp lab-dns-vpn lab-web-direct lab-web-vpn lab-gost-exit
+    systemctl restart lab-dns-public lab-dohd lab-dns-corp lab-dns-vpn lab-web-direct lab-web-vpn \
+        lab-nginx-entry lab-gost-entry lab-nginx-exit lab-gost-exit
     systemctl restart dnscrypt-proxy.socket pihole-FTL
 
     # restart, а не start: при переустановке должен заработать новый бинарник.
@@ -584,16 +628,31 @@ conf_set() {
     fi
 }
 
+# install_node <узел> — nginx узла туннеля: SNI data.<узел>.example → GOST
+# (127.0.0.1:9443), остальное — веб-сайт узла www.<узел>.example.
+install_node() {
+    local n=$1 dir="${SRV_DIR}/node-$1"
+    mkdir -p "${dir}/www" "${dir}/tmp"
+    echo "www-${n}" >"${dir}/www/index.html"
+    sed -e "s|@NAME@|${n}|g" -e "s|@DIR@|${dir}|g" -e "s|@PKI@|${PKI_DIR}|g" \
+        "${LAB_DIR}/nodes/nginx.conf" >"${dir}/nginx.conf"
+    unit "lab-nginx-${n}" "${n}" "/usr/sbin/nginx -c ${dir}/nginx.conf -g 'daemon off;'"
+    in_ns "lab-nginx-${n}" "${n}"
+}
+
 # gost_client <режим> — юнит GOST-клиента на «RPi» под режим routerd.
 gost_client() {
-    local chain="-F relay+ws://198.51.100.6:8080?path=/tunnel" listen
+    local chain="-F https://lab:entry-secret@data.entry.example:443?secure=true" listen
     case $1 in
     redirect) listen="-L red://:1080" ;;
     tproxy) listen="-L red://:1080?tproxy=true -L redu://:1080?ttl=30s" ;;
-    route) listen="-L tun://:0/:8421?net=192.168.123.2/24&name=tun0" ;;
+    route) listen="-L tun://:0/127.0.0.1:8421?net=192.168.123.2/24&name=tun0" ;;
     *) die "неизвестный режим: $1" ;;
     esac
-    unit gost-run rpi "/usr/local/bin/gost ${listen} ${chain}"
+    # Юнит — пример из deploy/ (те же ограничения прав), со своей командой.
+    sed -e "s|^ExecStart=.*|ExecStart=/usr/local/bin/gost ${listen//&/\\&} ${chain}|" \
+        -e "s|^\[Service\]|[Service]\nNetworkNamespacePath=/run/netns/lab-rpi|" \
+        "${REPO_DIR}/deploy/systemd/gost-run.service" >"${UNIT_DIR}/gost-run.service"
 }
 
 cmd_mode() {
@@ -623,6 +682,28 @@ expect() {
     shift
     if "$@" >/dev/null 2>&1; then pass "${desc}"; else fail "${desc}"; fi
 }
+# https_get <узел> <www|data> — содержимое https://<host>.<узел>.example/ из LAN
+# (с проверкой сертификата по CA стенда).
+https_get() {
+    local ip host="$2.$1.example"
+    ip="$(node_ip "$1")"
+    nsx client curl -fsS --max-time 5 --resolve "${host}:443:${ip}" "https://${host}/" 2>/dev/null
+}
+# listen_addr <ns> <t|u> <порт> — адреса, на которых слушает порт.
+listen_addr() { nsx "$1" ss -Hln"$2" | awk -v p=":$3" '$4 ~ p"$" {sub(p"$", "", $4); print $4}' | sort -u | xargs; }
+node_ip() { case $1 in entry) echo 198.51.100.10 ;; exit) echo 198.51.100.6 ;; esac; }
+# proxy_get <user:pass|""> <адрес> — запрос к сайту через GOST входного узла как HTTPS-прокси.
+proxy_get() {
+    local auth=${1:+$1@}
+    nsx client curl -fsS --max-time 5 --resolve data.entry.example:443:198.51.100.10 \
+        -x "https://${auth}data.entry.example:443" "http://$2/" 2>/dev/null | grep -q site
+}
+# node_saw <узел> <адрес> — GOST узла за последние 30 с обслужил клиента с адреса
+# (адрес из proxy_protocol nginx).
+# node_saw_since <узел> <строка> <секунд> — GOST узла обслуживал соединение к адресу.
+node_saw_since() { journalctl -u "lab-gost-$1" --since "-$3s" -o cat | grep -qF "$2"; }
+node_saw() { journalctl -u "lab-gost-$1" --since -30s -o cat | grep -q "\"client\":\"$2:"; }
+
 # Адрес клиента последнего запроса к сайту (из журнала busybox httpd).
 seen_by() {
     journalctl -u "$1" -n 20 --no-pager -o cat | grep -oE '[0-9]+(\.[0-9]+){3}' | tail -1
@@ -857,6 +938,18 @@ cmd_test() {
     cmd_mode "${mode}" closed >/dev/null
     wait_for 10 web_ok vpn.example || true
 
+    log_info "Удалённые узлы туннеля"
+    expect "www.exit.example — веб-сайт узла" eq "$(https_get exit www)" www-exit
+    expect "data.entry.example без авторизации — тот же сайт (probeResist)" eq "$(https_get entry data)" www-entry
+    expect "прокси без пароля не пускает" not proxy_get "" 203.0.113.10
+    expect "прокси с чужим паролем не пускает" not proxy_get lab:wrong 203.0.113.10
+    expect "прокси с паролем пускает" proxy_get lab:entry-secret 203.0.113.10
+    expect "GOST узлов слушает только 127.0.0.1:9443" eq "$(listen_addr entry t 9443) $(listen_addr exit t 9443)" "127.0.0.1 127.0.0.1"
+    expect "tun-сервер exit слушает только 127.0.0.1:8421" eq "$(listen_addr exit u 8421)" 127.0.0.1
+    fetch vpn.example
+    expect "цепочка: exit видит клиентом entry" wait_for 5 node_saw exit 198.51.100.10
+    expect "цепочка: entry видит клиентом RPi (адрес роутера)" wait_for 5 node_saw entry 198.51.100.2
+
     log_info "Остановка и запуск"
     ctl stop >/dev/null
     expect "stop убирает таблицу router_service" not table_present
@@ -879,6 +972,44 @@ cmd_test_all() {
     cmd_mode redirect closed
     [[ ${#failed[@]} -eq 0 ]] || die "не пройдены режимы: ${failed[*]}"
     log_info "Все режимы пройдены."
+}
+
+#===============================================================================
+# test-idle: долгое простаивающее соединение через туннель (отдельно — долго)
+#===============================================================================
+cmd_test_idle() {
+    need_root
+    local secs=${1:-120} srv start dur out
+    fails=0
+    log_info "Режим $(conf_get VPN_MODE): TLS-соединение к адресу из списка простаивает ${secs} с"
+    # Сервер держит соединение, пока открыт его ввод (sleep): из /dev/null он
+    # закрывал бы соединение сразу. $! — PID openssl (последний в конвейере;
+    # ip netns exec выполняет exec в том же процессе).
+    sleep "$((secs + 30))" | ip netns exec lab-inet openssl s_server -quiet -accept 203.0.113.20:8443 \
+        -cert "${PKI_DIR}/doh-fullchain.crt" -key "${PKI_DIR}/doh.key" >/dev/null 2>&1 &
+    srv=$!
+    sleep 1
+    # Адрес попадает в туннель, только пока свежа DNS-запись vpn.example.
+    resolve client vpn.example 192.168.3.2 >/dev/null
+    expect "203.0.113.20 в списке VPN" set_has vpn_dynamic 203.0.113.20
+    start=${SECONDS}
+    # Без -quiet s_client закрывает соединение сам, когда кончается ввод (через
+    # secs); при разрыве выходит раньше (вывод в обоих случаях «closed»).
+    # Конвейер ждёт и sleep, поэтому время выхода s_client записывается внутри.
+    local tmp
+    tmp="$(mktemp -d)"
+    sleep "${secs}" | {
+        nsx client openssl s_client -connect 203.0.113.20:8443 >"${tmp}/out" 2>&1
+        echo "${SECONDS}" >"${tmp}/end"
+    } || true
+    dur=$(($(cat "${tmp}/end") - start))
+    out="$(tail -1 "${tmp}/out")"
+    rm -rf "${tmp}"
+    kill "${srv}" 2>/dev/null || true
+    wait "${srv}" 2>/dev/null || true
+    expect "соединение шло через туннель (входной узел)" node_saw_since entry 203.0.113.20:8443 "$((dur + 5))"
+    expect "соединение прожило ${dur} с из ${secs} (${out})" test "${dur}" -ge "${secs}"
+    [[ ${fails} -eq 0 ]] || die "соединение разорвано раньше времени"
 }
 
 #===============================================================================
@@ -938,6 +1069,10 @@ mode)
 test) cmd_test ;;
 test-all) cmd_test_all ;;
 test-install) cmd_test_install ;;
+test-idle)
+    shift
+    cmd_test_idle "$@"
+    ;;
 status) cmd_status ;;
 exec)
     need_root
