@@ -552,7 +552,7 @@ run_installer() {
     return "${rc}"
 }
 
-ctl() { ROUTERD_CONFIG_DIR="${CONFIG_DIR}" /usr/local/bin/router_service_ctl "$@"; }
+ctl() { ROUTERD_CONFIG_DIR="${CONFIG_DIR}" /usr/local/bin/rsc "$@"; }
 
 cmd_install() {
     need_root
@@ -606,7 +606,7 @@ cmd_install() {
     systemctl restart dnscrypt-proxy.socket pihole-FTL
 
     # restart, а не start: при переустановке должен заработать новый бинарник.
-    log_info "Установлено. Перезапуск стека как на бою: router_service_ctl restart"
+    log_info "Установлено. Перезапуск стека как на бою: rsc restart"
     ctl restart
     # routerd исправляет pihole.toml в фоне — дождаться, пока Pi-hole снова в строю.
     wait_for 120 pihole_key_is dns.upstreams "[ 127.0.0.1#5053 ]" || die "routerd не исправил pihole.toml"
@@ -755,11 +755,15 @@ rcode() { nsx client dig +time=2 +tries=1 "$@" @192.168.3.2 | grep -oE 'status: 
 ecs_sent() {
     local cap
     cap="$(mktemp)"
-    nsx rpi timeout 4 tcpdump -i lo -n -x -c 1 "udp dst port 5353" >"${cap}" 2>/dev/null &
+    # Несколько пакетов: первым может оказаться служебный запрос (например,
+    # проверка готовности Pi-hole) — ищем запрос клиента среди всех.
+    nsx rpi timeout 4 tcpdump -i lo -n -x -c 10 "udp dst port 5353" >"${cap}" 2>/dev/null &
     sleep 0.5
     resolve client direct.example 192.168.3.2 >/dev/null || true
     wait
-    grep -E '^\s+0x' "${cap}" | cut -d: -f2 | tr -d ' \n' | grep -q "0008000800012000$(ip_hex "$(client_ip)")"
+    # Каждый пакет — одной строкой hex, чтобы не склеивать соседние.
+    awk '/^[0-9]/ {if (h) print h; h=""; next} {sub(/^[ \t]*0x[0-9a-f]+:/, ""); gsub(/ /, ""); h = h $0} END {if (h) print h}' "${cap}" |
+        grep -q "0008000800012000$(ip_hex "$(client_ip)")"
     local rc=$?
     rm -f "${cap}"
     return ${rc}
@@ -1017,7 +1021,7 @@ cmd_test_idle() {
 #===============================================================================
 cmd_test_install() {
     need_root
-    [[ -L /usr/local/bin/router_service_ctl ]] || die "сначала lab.sh install"
+    [[ -L /usr/local/bin/rsc ]] || die "сначала lab.sh install"
     local out sum_conf sum_gost
     sum_conf="$(sha256sum <"${CONFIG_DIR}/router.conf")"
     sum_gost="$(sha256sum <"${UNIT_DIR}/gost-run.service")"
@@ -1026,13 +1030,17 @@ cmd_test_install() {
     out="$(run_installer --skip-deps --no-start 2>&1)" && pass "повторный запуск" || fail "повторный запуск: ${out}"
     expect "router.conf не изменён" eq "$(sha256sum <"${CONFIG_DIR}/router.conf")" "${sum_conf}"
     expect "gost-run.service не изменён" eq "$(sha256sum <"${UNIT_DIR}/gost-run.service")" "${sum_gost}"
-    expect "router_service_ctl → routerd" eq "$(readlink /usr/local/bin/router_service_ctl)" routerd
+    expect "rsc и router_service_ctl → routerd" \
+        eq "$(readlink /usr/local/bin/rsc) $(readlink /usr/local/bin/router_service_ctl)" "routerd routerd"
     expect "check-config в выводе" grep -q 'router.conf' <<<"${out}"
     expect "без NetworkManager — предупреждение, не ошибка" grep -q 'apply-network --dry-run' <<<"${out}"
-    expect "автодополнение bash" bash -n /usr/share/bash-completion/completions/router_service_ctl
-    expect "автодополнение bash: команды" grep -q 'apply-network' /usr/share/bash-completion/completions/router_service_ctl
+    local bc=/usr/share/bash-completion/completions
+    expect "автодополнение bash" bash -n "${bc}/rsc"
+    expect "автодополнение bash для обоих имён" \
+        bash -c ". ${bc}/rsc && complete -p rsc && complete -p router_service_ctl && [[ -e ${bc}/router_service_ctl ]]"
+    expect "автодополнение bash: команды" grep -q 'apply-network' "${bc}/rsc"
     if command -v zsh >/dev/null; then
-        expect "автодополнение zsh" zsh -n /usr/local/share/zsh/site-functions/_router_service_ctl
+        expect "автодополнение zsh" zsh -n /usr/local/share/zsh/site-functions/_rsc
     fi
 
     out="$(run_installer --skip-deps --no-start --force 2>&1)" || fail "--force: ${out}"
@@ -1042,12 +1050,12 @@ cmd_test_install() {
     install -m 0644 "${LAB_DIR}"/conf/{router.conf,vpn_domains.txt,dns_override.txt} "${CONFIG_DIR}/"
     rm -f "${CONFIG_DIR}"/*.bak.*
 
-    rm /usr/local/bin/router_service_ctl
-    printf '#!/bin/bash\n' >/usr/local/bin/router_service_ctl
-    out="$(run_installer --skip-deps --no-start 2>&1)" && fail "чужой router_service_ctl затёрт" ||
-        expect "чужой router_service_ctl: отказ" grep -q 'не symlink' <<<"${out}"
-    expect "чужой router_service_ctl: не тронут" grep -q '^#!/bin/bash' /usr/local/bin/router_service_ctl
-    ln -sfn routerd /usr/local/bin/router_service_ctl
+    rm /usr/local/bin/rsc
+    printf '#!/bin/bash\n' >/usr/local/bin/rsc
+    out="$(run_installer --skip-deps --no-start 2>&1)" && fail "чужой rsc затёрт" ||
+        expect "чужой rsc: отказ" grep -q 'не symlink' <<<"${out}"
+    expect "чужой rsc: не тронут" grep -q '^#!/bin/bash' /usr/local/bin/rsc
+    ln -sfn routerd /usr/local/bin/rsc
 
     ctl restart >/dev/null
     expect "routerd после переустановки" systemctl is-active --quiet routerd

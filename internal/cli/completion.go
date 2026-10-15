@@ -9,7 +9,7 @@ import (
 	"github.com/volkserg/rpi5-gorouter/internal/lists"
 )
 
-// Completion печатает скрипт автодополнения router_service_ctl для shell
+// Completion печатает скрипт автодополнения rsc и router_service_ctl для shell
 // (bash или zsh). Список команд берётся из той же таблицы, что и справка,
 // поэтому дополнение не расходится с бинарником.
 func Completion(w io.Writer, shell string) error {
@@ -50,7 +50,7 @@ func Completion(w io.Writer, shell string) error {
 // Записи списка для remove-*: домены — строки не с цифры, IP/CIDR — с цифры.
 // Каталог конфигов можно переопределить ROUTERD_CONFIG_DIR, как и для CLI.
 
-const bashCompletion = `# bash completion для router_service_ctl (сгенерировано: routerd completion bash)
+const bashCompletion = `# bash completion для rsc и router_service_ctl (сгенерировано: routerd completion bash)
 
 _router_service_ctl_entries() {
     local file="${ROUTERD_CONFIG_DIR:+${ROUTERD_CONFIG_DIR}/vpn_domains.txt}"
@@ -85,11 +85,11 @@ _router_service_ctl() {
     COMPREPLY=($(compgen -W "${words_[*]}" -- "$cur"))
 }
 
-complete -F _router_service_ctl router_service_ctl
+complete -F _router_service_ctl rsc router_service_ctl
 `
 
-const zshCompletion = `#compdef router_service_ctl
-# zsh completion для router_service_ctl (сгенерировано: routerd completion zsh)
+const zshCompletion = `#compdef rsc router_service_ctl
+# zsh completion для rsc и router_service_ctl (сгенерировано: routerd completion zsh)
 
 _router_service_ctl_entries() {
     local file=${ROUTERD_CONFIG_DIR:+$ROUTERD_CONFIG_DIR/vpn_domains.txt}

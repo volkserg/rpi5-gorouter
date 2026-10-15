@@ -6,7 +6,7 @@
 # Что делает:
 #   1. Ставит недостающее: dnscrypt-proxy (apt), Pi-hole (официальный
 #      установщик), GOST (релиз с GitHub, проверка sha256).
-#   2. Ставит routerd, router_service_ctl, routerd.service, автодополнение
+#   2. Ставит routerd, команды rsc и router_service_ctl, routerd.service, автодополнение
 #      bash/zsh; конфиги и gost-run.service — примеры, только если их нет.
 #   3. check-config, apply-network --dry-run, включение и запуск.
 #
@@ -27,8 +27,10 @@ ROUTERD_BIN="${ROUTERD_BIN:-${SRC_DIR}/bin/routerd-linux-arm64}"
 CONFIG_DIR="/usr/local/etc/router_service"
 BIN_DIR="/usr/local/bin"
 UNIT_DIR="/etc/systemd/system"
-BASH_COMPLETION="/usr/share/bash-completion/completions/router_service_ctl"
-ZSH_COMPLETION="/usr/local/share/zsh/site-functions/_router_service_ctl"
+BASH_COMPLETION="/usr/share/bash-completion/completions/rsc"
+ZSH_COMPLETION="/usr/local/share/zsh/site-functions/_rsc"
+# Команды управления — symlink'и на routerd.
+CTL_NAMES=(rsc router_service_ctl)
 PIHOLE_INSTALLER="https://install.pi-hole.net"
 GOST_RELEASES="https://api.github.com/repos/go-gost/gost/releases/latest"
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -67,7 +69,7 @@ die() {
     exit 1
 }
 
-ctl() { "${BIN_DIR}/router_service_ctl" "$@"; }
+ctl() { "${BIN_DIR}/rsc" "$@"; }
 
 # conf_get <ключ> <по умолчанию> — значение из установленного router.conf.
 conf_get() {
@@ -110,9 +112,11 @@ VERSION="$("${ROUTERD_BIN}" version 2>&1)" || die "${ROUTERD_BIN} не запу�
 log_info "Устанавливается ${VERSION}"
 # Обычный файл вместо symlink на routerd — другая программа с тем же именем:
 # не затираем.
-if [[ -e "${BIN_DIR}/router_service_ctl" && ! -L "${BIN_DIR}/router_service_ctl" ]]; then
-    die "${BIN_DIR}/router_service_ctl — не symlink на routerd: сначала уберите или переименуйте его"
-fi
+for n in "${CTL_NAMES[@]}"; do
+    if [[ -e "${BIN_DIR}/${n}" && ! -L "${BIN_DIR}/${n}" ]]; then
+        die "${BIN_DIR}/${n} — не symlink на routerd: сначала уберите или переименуйте его"
+    fi
+done
 
 #===============================================================================
 # 1. Зависимости
@@ -211,8 +215,10 @@ log_step "routerd"
 # Через временный файл: работающий routerd продолжает работать до перезапуска.
 install -m 0755 "${ROUTERD_BIN}" "${BIN_DIR}/.routerd.new"
 mv -f "${BIN_DIR}/.routerd.new" "${BIN_DIR}/routerd"
-ln -sfn routerd "${BIN_DIR}/router_service_ctl"
-log_info "  ${BIN_DIR}/routerd, ${BIN_DIR}/router_service_ctl → routerd"
+for n in "${CTL_NAMES[@]}"; do
+    ln -sfn routerd "${BIN_DIR}/${n}"
+done
+log_info "  ${BIN_DIR}/routerd; ${CTL_NAMES[*]} → routerd"
 
 mkdir -p "${CONFIG_DIR}"
 for f in router.conf vpn_domains.txt dns_override.txt; do
@@ -231,7 +237,10 @@ fi
 
 mkdir -p "$(dirname "${BASH_COMPLETION}")" "$(dirname "${ZSH_COMPLETION}")"
 "${BIN_DIR}/routerd" completion bash >"${BASH_COMPLETION}"
+# bash-completion подгружает файл по имени команды — второе имя ссылкой.
+ln -sfn rsc "$(dirname "${BASH_COMPLETION}")/router_service_ctl"
 "${BIN_DIR}/routerd" completion zsh >"${ZSH_COMPLETION}"
+rm -f "$(dirname "${ZSH_COMPLETION}")/_router_service_ctl"
 log_info "  автодополнение: ${BASH_COMPLETION}, ${ZSH_COMPLETION}"
 
 systemctl daemon-reload
@@ -255,15 +264,15 @@ log_info "routerd.service включён в автозапуск"
 
 if [[ "${START}" == true ]]; then
     log_step "Запуск"
-    ctl restart || die "запуск не удался: router_service_ctl logs"
+    ctl restart || die "запуск не удался: rsc logs"
 fi
 
 echo
 log_info "Готово: ${VERSION}"
 [[ "${NETWORK_PENDING}" == true ]] &&
-    log_warn "Адрес RPi в NetworkManager отличается от router.conf: sudo router_service_ctl apply-network, затем --confirm"
+    log_warn "Адрес RPi в NetworkManager отличается от router.conf: sudo rsc apply-network, затем --confirm"
 grep -q 'vpn.example.com' "${UNIT_DIR}/gost-run.service" 2>/dev/null &&
-    log_warn "gost-run.service — ещё пример: sudo systemctl edit --full gost-run, затем router_service_ctl restart"
+    log_warn "gost-run.service — ещё пример: sudo systemctl edit --full gost-run, затем rsc restart"
 [[ "$(conf_get DHCP_ENABLED yes)" == yes ]] &&
     log_warn "DHCP раздаёт routerd — выключите DHCP-сервер на роутере $(conf_get ROUTER_IP 192.168.3.1)"
-echo "Состояние: router_service_ctl status    Журнал: router_service_ctl logs"
+echo "Состояние: rsc status    Журнал: rsc logs    Справка: rsc help"

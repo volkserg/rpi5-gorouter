@@ -43,7 +43,7 @@ func (x *ctx) applyLists() (code int, applied bool) {
 			return 1
 		}
 		if len(st) == 0 || !st[0].Running() {
-			x.notef("routerd не запущен — изменения применятся при запуске (router_service_ctl start).")
+			x.notef("routerd не запущен — изменения применятся при запуске (%s start).", x.Prog)
 			return 0
 		}
 		if err := m.Reload(ctx, services.UnitRouterd); err != nil {
@@ -60,7 +60,7 @@ func (x *ctx) applyLists() (code int, applied bool) {
 func (x *ctx) parseArg(args []string, cmd, usageArg, what string, want lists.Kind) (lists.Entry, bool) {
 	if len(args) == 0 || args[0] == "" {
 		x.errf("Ошибка: укажите %s", what)
-		x.out("Использование: router_service_ctl %s %s", cmd, usageArg)
+		x.out("Использование: %s %s %s", x.Prog, cmd, usageArg)
 		return lists.Entry{}, false
 	}
 	e, err := lists.ParseEntry(args[0])
@@ -147,7 +147,7 @@ func cmdRemoveIP(x *ctx, a []string) int {
 func (x *ctx) loadList(args []string, cmd string, kind lists.Kind) int {
 	if len(args) == 0 || args[0] == "" {
 		x.errf("Ошибка: укажите путь к файлу")
-		x.out("Использование: router_service_ctl %s <file>", cmd)
+		x.out("Использование: %s %s <file>", x.Prog, cmd)
 		return 1
 	}
 	path := args[0]

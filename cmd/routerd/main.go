@@ -1,16 +1,18 @@
-// Command routerd — router_service на Go.
+// Command routerd — шлюз LAN для Raspberry Pi 5.
 //
-// Один бинарник, два имени:
+// Один бинарник, несколько имён:
 //
 //	routerd run                   демон (systemd-юнит routerd.service)
-//	routerd ctl <команда> …       CLI (то же, что router_service_ctl)
-//	router_service_ctl <команда>  через symlink на routerd
-//	routerd completion bash|zsh   автодополнение router_service_ctl
 //	routerd version
+//	routerd completion bash|zsh   автодополнение rsc и router_service_ctl
+//	routerd <команда> …           команды управления (routerd ctl <команда> — то же)
+//	rsc <команда> …               то же через symlink на routerd
+//	router_service_ctl <команда>  то же через symlink на routerd
 package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -21,17 +23,22 @@ import (
 // version задаётся при сборке: -ldflags "-X main.version=…".
 var version = "dev"
 
+// ctlNames — имена symlink'ов, под которыми бинарник работает как команда управления.
+var ctlNames = map[string]bool{cli.DefaultProg: true, "router_service_ctl": true}
+
 func main() {
 	os.Exit(run(os.Args))
 }
 
 func run(args []string) int {
 	env := cli.DefaultEnv()
-	if filepath.Base(args[0]) == "router_service_ctl" {
+	if base := filepath.Base(args[0]); ctlNames[base] {
+		env.Prog = base
 		return cli.Run(env, args[1:])
 	}
+	env.Prog = "routerd"
 	if len(args) < 2 {
-		usage()
+		usage(os.Stderr)
 		return 2
 	}
 	switch args[1] {
@@ -39,6 +46,9 @@ func run(args []string) int {
 		return runDaemon()
 	case "ctl":
 		return cli.Run(env, args[2:])
+	case "version", "--version":
+		fmt.Println(versionString())
+		return 0
 	case "completion":
 		shell := ""
 		if len(args) > 2 {
@@ -49,24 +59,20 @@ func run(args []string) int {
 			return 2
 		}
 		return 0
-	case "version", "--version":
-		fmt.Println(versionString())
-		return 0
 	case "help", "--help", "-h":
-		usage()
-		return 0
+		usage(os.Stdout)
+		fmt.Println()
+		return cli.Run(env, []string{"help"})
 	}
-	fmt.Fprintf(os.Stderr, "routerd: неизвестная команда %q\n", args[1])
-	usage()
-	return 2
+	return cli.Run(env, args[1:])
 }
 
-func usage() {
-	fmt.Fprint(os.Stderr, `Использование:
+func usage(w io.Writer) {
+	fmt.Fprint(w, `Использование:
   routerd run                         демон (запускается systemd)
-  routerd ctl <команда> [аргументы]   команды router_service_ctl (routerd ctl help)
-  routerd completion <bash|zsh>       автодополнение router_service_ctl
   routerd version                     версия сборки
+  routerd completion <bash|zsh>       автодополнение rsc и router_service_ctl
+  routerd <команда> [аргументы]       команды управления (routerd help; короче — rsc <команда>)
 `)
 }
 

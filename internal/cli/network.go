@@ -21,7 +21,7 @@ func cmdApplyNetwork(x *ctx, args []string) int {
 			mode = args[0]
 		default:
 			x.errf("Неизвестный параметр: %s", args[0])
-			x.out("Использование: router_service_ctl apply-network [--dry-run|--confirm|--rollback]")
+			x.out("Использование: %s apply-network [--dry-run|--confirm|--rollback]", x.Prog)
 			return 1
 		}
 	}
@@ -98,7 +98,7 @@ func cmdApplyNetwork(x *ctx, args []string) int {
 	}
 	x.okf("Сеть применена: %s/%d, шлюз %s.", cfg.RPi5IP, cfg.LANSubnet.Bits(), cfg.RouterIP)
 	x.notef("Проверьте доступ к RPi (например, SSH на %s) и в течение %d с подтвердите:", cfg.RPi5IP, int(networkRollback.Seconds()))
-	x.notef("  sudo router_service_ctl apply-network --confirm")
+	x.notef("  sudo %s apply-network --confirm", x.Prog)
 	x.notef("Без подтверждения NetworkManager сам вернёт прежние настройки.")
 	// Новый адрес RPi нужен DNS и DHCP routerd.
 	code, _ := x.applyLists()

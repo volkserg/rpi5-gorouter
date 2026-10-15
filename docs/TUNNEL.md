@@ -88,7 +88,7 @@ route     gost -L tun://:0/127.0.0.1:8421?net=192.168.123.2/24&name=tun0 -F …
 
 Юнит работает без root (`DynamicUser`): `CAP_NET_ADMIN` нужен `tproxy` и `route`,
 `CAP_NET_BIND_SERVICE` — `tproxy`, чтобы отвечать на UDP с исходного порта
-сервера (например, 53). После смены режима — `router_service_ctl restart`.
+сервера (например, 53). После смены режима — `rsc restart`.
 
 ## Проверено на стенде
 

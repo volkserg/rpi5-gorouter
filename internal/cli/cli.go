@@ -1,4 +1,4 @@
-// Package cli — команды router_service_ctl.
+// Package cli — команды управления routerd (rsc, router_service_ctl, routerd <команда>).
 package cli
 
 import (
@@ -19,6 +19,8 @@ import (
 
 // Env — окружение команды; в тестах подменяется.
 type Env struct {
+	// Prog — имя, под которым вызвана команда (rsc, routerd…), для подсказок.
+	Prog           string
 	Stdout, Stderr io.Writer
 	ConfigDir      string
 	Color          bool
@@ -48,6 +50,7 @@ func DefaultEnv() Env {
 		state = dhcp.DefaultStateDir
 	}
 	return Env{
+		Prog:      DefaultProg,
 		Stdout:    os.Stdout,
 		Stderr:    os.Stderr,
 		ConfigDir: dir,
@@ -145,8 +148,14 @@ func (x *ctx) loadConfig() (*config.Config, bool) {
 	return cfg, true
 }
 
-// Run выполняет команду router_service_ctl и возвращает код выхода.
+// DefaultProg — основное имя команды управления (symlink на routerd).
+const DefaultProg = "rsc"
+
+// Run выполняет команду управления и возвращает код выхода.
 func Run(env Env, args []string) int {
+	if env.Prog == "" {
+		env.Prog = DefaultProg
+	}
 	x := &ctx{Env: env, c: newPalette(env.Color)}
 	name := "help"
 	if len(args) > 0 {
@@ -164,12 +173,12 @@ func Run(env Env, args []string) int {
 		return c.run(x, args)
 	}
 	x.errf("Неизвестная команда: %s", name)
-	fmt.Fprintln(x.Stdout, "Использование: router_service_ctl help")
+	fmt.Fprintf(x.Stdout, "Использование: %s help\n", x.Prog)
 	return 1
 }
 
 func (x *ctx) usage() {
-	x.out("Использование: router_service_ctl <команда> [аргументы]")
+	x.out("Использование: %s <команда> [аргументы]", x.Prog)
 	x.out("")
 	x.out("Команды:")
 	for _, c := range commands {

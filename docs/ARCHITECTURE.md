@@ -17,7 +17,7 @@ UDP/443 к VPN-адресам → REJECT icmp port-unreachable (браузер �
 ```
 
 Интерфейсы: `router.conf`, `vpn_domains.txt`, `dns_override.txt` в
-`/usr/local/etc/router_service`, команды `router_service_ctl` (symlink на `routerd`).
+`/usr/local/etc/router_service`, команды управления `rsc` (symlink на `routerd`, второе имя — `router_service_ctl`).
 
 ## Компоненты
 
@@ -36,7 +36,8 @@ dnscrypt-proxy, GOST.
 
 ## Принятые решения
 
-- Один бинарник `routerd`; CLI — `routerd ctl …` или symlink `router_service_ctl`.
+- Один бинарник `routerd`; команды управления — `rsc <команда>` (symlink),
+  `routerd <команда>` или `router_service_ctl <команда>`.
 - Работает от root с ограниченным `CapabilityBoundingSet`
   (CAP_NET_ADMIN, CAP_NET_BIND_SERVICE; CAP_NET_RAW не нужен — DHCP отвечает
   broadcast; CAP_DAC_OVERRIDE, CAP_CHOWN, CAP_FOWNER — только для правки pihole.toml).
@@ -153,7 +154,7 @@ dnscrypt-proxy, GOST.
   удалённым узлом routerd не проверяет;
 - `VPN_FAILOVER=open`: туннель недоступен — правила перехвата и `ip rule`
   снимаются (set'ы, NAT и QUIC-reject остаются), вернулся — восстанавливаются.
-  Состояние видно в `router_service_ctl status` (StatusText routerd).
+  Состояние видно в `rsc status` (StatusText routerd).
 
 GOST-клиенту в режимах `tproxy` и `route` нужен `CAP_NET_ADMIN`
 (`IP_TRANSPARENT`, создание tun), в `tproxy` ещё `CAP_NET_BIND_SERVICE`
@@ -175,11 +176,11 @@ tun-сервер на выходном узле для `route` — [TUNNEL.md](T
 ## Структура
 
 ```
-cmd/routerd/          точка входа; argv[0]=router_service_ctl → CLI
+cmd/routerd/          точка входа; argv[0]=rsc или router_service_ctl → команды управления
 internal/config/      router.conf
 internal/domain/      нормализация, проверка, суффиксный матчер (семантика dnsmasq)
 internal/lists/       vpn_domains.txt, dns_override.txt; flock + атомарная запись
-internal/cli/         команды router_service_ctl, автодополнение bash/zsh
+internal/cli/         команды управления (rsc), автодополнение bash/zsh
 internal/services/    systemd по D-Bus, порядок запуска (+ servicestest — подделка для тестов)
 internal/sysinfo/     /proc: слушающие порты, sysctl (для status)
 internal/firewall/    nftables через netlink: таблица router_service, set'ы, правила (Linux)

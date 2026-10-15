@@ -19,7 +19,7 @@ NetworkManager управляются через netlink и D-Bus.
 - **Цепочка DNS** routerd → Pi-hole → dnscrypt-proxy: routerd сверяет и
   исправляет ключи цепочки в `pihole.toml`.
 - **`apply-network`** — адрес RPi в NetworkManager по D-Bus с автооткатом.
-- **CLI `router_service_ctl`**, `install.sh`, автодополнение bash/zsh.
+- **Команда управления `rsc`**, `install.sh`, автодополнение bash/zsh.
 
 Архитектура и принятые решения — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
 настройка туннеля (GOST на RPi и удалённых узлах) — [docs/TUNNEL.md](docs/TUNNEL.md).
@@ -43,7 +43,7 @@ ssh pi@rpi 'tar -xzf routerd-*-linux-arm64.tar.gz && cd routerd-*-linux-arm64 &&
 
 `install.sh` ставит недостающее — dnscrypt-proxy (apt), Pi-hole (официальный
 установщик, сразу на порту 5353), GOST (последний релиз с GitHub, проверка
-sha256) — и сам routerd: бинарник, symlink `router_service_ctl`,
+sha256) — и сам routerd: бинарник, команды `rsc` и `router_service_ctl`,
 `routerd.service` (с автозапуском), автодополнение bash/zsh. Дальше —
 `check-config`, `apply-network --dry-run` и запуск стека.
 
@@ -60,14 +60,14 @@ sha256) — и сам routerd: бинарник, symlink `router_service_ctl`,
 
 Конфиг dnscrypt-proxy остаётся вашим: установщик только направляет
 `dnscrypt-proxy.socket` на `DNSCRYPT_ADDR` (drop-in `routerd.conf`), если он
-слушает другой адрес. Если `/usr/local/bin/router_service_ctl` — обычный файл,
-а не symlink на routerd, установщик останавливается и ничего не меняет.
+слушает другой адрес. Если `/usr/local/bin/rsc` или `router_service_ctl` —
+обычный файл, а не symlink на routerd, установщик останавливается и ничего не меняет.
 
 После установки:
 1. Указать свой сервер в `gost-run.service` (`sudo systemctl edit --full gost-run`)
    под `VPN_MODE` — варианты слушателя в комментарии юнита, сервер — [docs/TUNNEL.md](docs/TUNNEL.md).
 2. Выключить DHCP на домашнем роутере (если `DHCP_ENABLED=yes`).
-3. Если `apply-network --dry-run` показал изменения — `sudo router_service_ctl
+3. Если `apply-network --dry-run` показал изменения — `sudo rsc
    apply-network`, проверить доступ и `--confirm`.
 
 Все ключи `router.conf` с описанием и значениями по умолчанию —
@@ -76,14 +76,19 @@ sha256) — и сам routerd: бинарник, symlink `router_service_ctl`,
 ## Использование
 
 ```bash
-routerd ctl help
-routerd ctl status
-routerd ctl check-config
-sudo routerd ctl start
-sudo routerd ctl apply-network --dry-run   # что изменится в NetworkManager
-sudo routerd ctl apply-network             # применить; затем в течение 60 с:
-sudo routerd ctl apply-network --confirm   # иначе NetworkManager откатит сам
+rsc help
+rsc status
+rsc check-config
+sudo rsc start
+sudo rsc add-vpn-domain corp.example.com
+sudo rsc apply-network --dry-run   # что изменится в NetworkManager
+sudo rsc apply-network             # применить; затем в течение 60 с:
+sudo rsc apply-network --confirm   # иначе NetworkManager откатит сам
 ```
+
+`rsc` — symlink на `routerd`; те же команды доступны как `routerd <команда>`
+и `router_service_ctl <команда>`. Подсказки команд показывают имя, которым её
+вызвали.
 
 Порядок запуска: `dnscrypt-proxy.socket` → `dnscrypt-proxy` → `pihole-FTL` →
 `routerd` → `gost-run`. `stop` останавливает `gost-run` и `routerd`; Pi-hole и
