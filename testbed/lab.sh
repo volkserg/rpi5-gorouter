@@ -1078,6 +1078,13 @@ cmd_test_ansible() {
     }
     recap() { grep -oE "$1=[0-9]+" <<<"$2" | head -1 | cut -d= -f2; }
 
+    # Как на RPi перед первым запуском: команд rsc и router_service_ctl ещё нет,
+    # а от прежней установки остались файлы автодополнения router_service_ctl.
+    local bc=/usr/share/bash-completion/completions zc=/usr/local/share/zsh/site-functions
+    rm -f /usr/local/bin/rsc /usr/local/bin/router_service_ctl "${bc}/router_service_ctl"
+    printf '# прежнее автодополнение\n' >"${bc}/router_service_ctl"
+    printf '#compdef router_service_ctl\n' >"${zc}/_router_service_ctl"
+
     for mode in redirect tproxy route; do
         fails=0
         log_info "Роль, режим ${mode}"
@@ -1092,6 +1099,14 @@ cmd_test_ansible() {
             out="$(play "${mode}")"
             expect "повторный запуск ничего не меняет" eq "$(recap changed "${out}")" 0 ||
                 echo "${out}" | grep -B1 '^changed:' | head -10
+            expect "первая установка: команды созданы" \
+                eq "$(readlink /usr/local/bin/rsc) $(readlink /usr/local/bin/router_service_ctl)" "routerd routerd"
+            expect "прежний файл автодополнения bash заменён ссылкой" eq "$(readlink "${bc}/router_service_ctl")" rsc
+            expect "прежнее автодополнение zsh удалено" not test -e "${zc}/_router_service_ctl"
+            ln -sfn /bin/true /usr/local/bin/rsc
+            out="$(play "${mode}")" || true
+            expect "rsc — ссылка на другую программу: отказ" grep -q 'не symlink на routerd' <<<"${out}"
+            ln -sfn routerd /usr/local/bin/rsc
             ansible_lists_from_files "${mode}"
         fi
         expect "rsc и router_service_ctl → routerd" \
@@ -1276,6 +1291,10 @@ cmd_test_install() {
     out="$(run_installer --skip-deps --no-start 2>&1)" && fail "чужой rsc затёрт" ||
         expect "чужой rsc: отказ" grep -q 'не symlink' <<<"${out}"
     expect "чужой rsc: не тронут" grep -q '^#!/bin/bash' /usr/local/bin/rsc
+    ln -sfn routerd /usr/local/bin/rsc
+    ln -sfn /bin/true /usr/local/bin/rsc
+    out="$(run_installer --skip-deps --no-start 2>&1)" && fail "ссылка rsc на другую программу затёрта" ||
+        expect "ссылка rsc на другую программу: отказ" grep -q 'не symlink' <<<"${out}"
     ln -sfn routerd /usr/local/bin/rsc
 
     ctl restart >/dev/null

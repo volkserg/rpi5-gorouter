@@ -80,8 +80,16 @@
     label: "{{ item.item }}"
 
 # bash-completion подгружает файл по имени команды — второе имя ссылкой.
+# force: на месте ссылки может лежать прежний файл автодополнения этой команды.
 - name: Автодополнение bash для router_service_ctl
   ansible.builtin.file:
     src: rsc
     dest: /usr/share/bash-completion/completions/router_service_ctl
     state: link
+    force: true
+
+# Прежнее zsh-дополнение router_service_ctl: теперь его описывает _rsc.
+- name: Прежнее автодополнение zsh для router_service_ctl
+  ansible.builtin.file:
+    path: /usr/local/share/zsh/site-functions/_router_service_ctl
+    state: absent

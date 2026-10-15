@@ -115,8 +115,10 @@ log_info "Устанавливается ${VERSION}"
 # Обычный файл вместо symlink на routerd — другая программа с тем же именем:
 # не затираем.
 for n in "${CTL_NAMES[@]}"; do
-    if [[ -e "${BIN_DIR}/${n}" && ! -L "${BIN_DIR}/${n}" ]]; then
-        die "${BIN_DIR}/${n} — не symlink на routerd: сначала уберите или переименуйте его"
+    p="${BIN_DIR}/${n}"
+    # Свободно или ссылка на routerd; иначе — файл или ссылка на другую программу.
+    if [[ -e "${p}" || -L "${p}" ]] && [[ "$(readlink -f "${p}")" != "$(readlink -f "${BIN_DIR}/routerd")" ]]; then
+        die "${p} — не symlink на routerd: сначала уберите или переименуйте его"
     fi
 done
 

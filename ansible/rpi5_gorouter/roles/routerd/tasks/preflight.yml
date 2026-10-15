@@ -22,10 +22,15 @@
   loop: "{{ _routerd_ctl_names }}"
   register: _routerd_ctl_stat
 
+# Свободно или symlink на routerd; другое — файл или ссылка на чужую программу.
+# fail_msg не обращается к item.stat.path: у несуществующего файла его нет, а
+# ansible-core 2.19+ вычисляет сообщение и при успешной проверке.
 - name: Имена команд не заняты другой программой
   ansible.builtin.assert:
-    that: not item.stat.exists or item.stat.islnk
-    fail_msg: "{{ item.stat.path }} — не symlink на routerd: уберите или переименуйте его"
+    that: >-
+      not item.stat.exists
+      or (item.stat.islnk and item.stat.lnk_source == routerd_bin_dir ~ '/routerd')
+    fail_msg: "{{ routerd_bin_dir }}/{{ item.item }} — не symlink на routerd: уберите или переименуйте его"
     quiet: true
   loop: "{{ _routerd_ctl_stat.results }}"
   loop_control:

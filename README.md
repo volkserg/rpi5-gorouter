@@ -51,7 +51,7 @@ Ansible-роль (ниже) или `install.sh` из архива.
 проверка по `SHA256SUMS`, установка:
 
 ```bash
-V=v0.2.0
+V=v0.2.1
 curl -fLO https://github.com/volkserg/rpi5-gorouter/releases/download/$V/routerd-$V-linux-arm64.tar.gz
 curl -fLO https://github.com/volkserg/rpi5-gorouter/releases/download/$V/SHA256SUMS
 sha256sum -c SHA256SUMS
