@@ -11,15 +11,15 @@ Ansible-коллекция с ролью `routerd`: установка и нас
 ```yaml
 collections:
   - name: git+https://github.com/volkserg/rpi5-gorouter.git#/ansible/rpi5_gorouter
-    version: v0.2.3
+    version: v0.3.0
 ```
 
 ```bash
 ansible-galaxy collection install -r requirements.yml
 ```
 
-Версия коллекции совпадает с версией routerd: тег `v0.2.3` даёт роль, которая
-по умолчанию ставит routerd из релиза `v0.2.3`.
+Версия коллекции совпадает с версией routerd: тег `v0.3.0` даёт роль, которая
+по умолчанию ставит routerd из релиза `v0.3.0`.
 
 ## Пример
 
