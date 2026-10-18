@@ -1145,6 +1145,8 @@ cmd_test_ansible() {
         fi
         expect "rsc и router_service_ctl → routerd" \
             eq "$(readlink /usr/local/bin/rsc) $(readlink /usr/local/bin/router_service_ctl)" "routerd routerd"
+        expect "LOCAL_CLIENTS с пробелом в значении: оба сервиса в конфиге" \
+            bash -c "ROUTERD_CONFIG_DIR=${CONFIG_DIR} rsc info | grep -q 'lab-app2 10.99.0.4/30'"
         wait_for 15 web_ok vpn.example || true
         [[ ${fails} -eq 0 ]] || failed+=("${mode}: роль")
         (cmd_test) || failed+=("${mode}")

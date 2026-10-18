@@ -1,6 +1,7 @@
 # {{ ansible_managed }}
 # router.conf — ключи и значения по умолчанию:
 # https://github.com/volkserg/rpi5-gorouter/blob/main/deploy/config/router.conf
+{# Значения — в кавычках shell там, где нужно (пробел в LOCAL_CLIENTS, # и т.п.). #}
 {% for key, value in routerd_conf | dictsort %}
-{{ key }}={{ (('yes' if value else 'no') if value is boolean else value) }}
+{{ key }}={{ (('yes' if value else 'no') if value is boolean else value) | string | quote }}
 {% endfor %}
