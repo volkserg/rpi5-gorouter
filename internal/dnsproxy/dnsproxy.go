@@ -379,10 +379,16 @@ func localAnswer(req *dns.Msg, q dns.Question, z LocalZone) (*dns.Msg, bool) {
 		return m, true
 	}
 
-	if name != zone && !strings.HasSuffix(name, "."+zone) {
-		return nil, false
+	// Имя без точки (omicron) — хост LAN, как omicron.lan. Pi-hole с
+	// revServers пересылает такие имена в routerd (server=//), поэтому
+	// отправить их в upstream — зациклить запрос.
+	label, single := name, name != "" && name != zone && !strings.Contains(name, ".")
+	if !single {
+		if name != zone && !strings.HasSuffix(name, "."+zone) {
+			return nil, false
+		}
+		label = strings.TrimSuffix(strings.TrimSuffix(name, zone), ".")
 	}
-	label := strings.TrimSuffix(strings.TrimSuffix(name, zone), ".")
 	if label == "" {
 		return authoritative(req, dns.RcodeSuccess), true
 	}

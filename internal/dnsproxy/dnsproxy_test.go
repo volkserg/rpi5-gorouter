@@ -424,6 +424,14 @@ func TestLocalZone(t *testing.T) {
 	if resp := p.handle(writer{remote: lanUDP}, query("lb._dns-sd._udp.lan", dns.TypePTR, false)); resp.Rcode != dns.RcodeNameError || !resp.Authoritative {
 		t.Errorf("PTR lb._dns-sd._udp.lan: NXDOMAIN, got %v", resp)
 	}
+	// Имя без точки — хост LAN; неизвестное — NXDOMAIN, а не upstream.
+	resp = p.handle(writer{remote: lanUDP}, query("laptop", dns.TypeA, false))
+	if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) != 1 || resp.Answer[0].(*dns.A).A.String() != "192.168.3.100" {
+		t.Errorf("A laptop: %v", resp)
+	}
+	if resp := p.handle(writer{remote: lanUDP}, query("omicron", dns.TypeHTTPS, false)); resp.Rcode != dns.RcodeNameError || !resp.Authoritative {
+		t.Errorf("HTTPS omicron: NXDOMAIN, got %v", resp)
+	}
 	for _, name := range []string{"local", "printer.local", "_ipp._tcp.Local"} {
 		if resp := p.handle(writer{remote: lanUDP}, query(name, dns.TypeSOA, false)); resp.Rcode != dns.RcodeNameError {
 			t.Errorf("%s: NXDOMAIN, got %d", name, resp.Rcode)
