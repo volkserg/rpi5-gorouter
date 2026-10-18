@@ -51,6 +51,13 @@ func cmdInfo(x *ctx, _ []string) int {
 	}
 	x.out("  Туннель:            режим %s, порт %d, tun %s, VPN_FAILOVER=%s, юнит %s", cfg.VPNMode, cfg.VPNPort, cfg.VPNTun, failover, cfg.VPNService)
 	x.out("  QUIC reject:        %s", yesNo(cfg.QUICReject))
+	for i, l := range cfg.LocalClients {
+		title := ""
+		if i == 0 {
+			title = "Локальные сервисы:"
+		}
+		x.out("  %-19s %s %s: адрес %s, шлюз %s (%s)", title, l.Name, l.Net, l.ClientIP(), l.HostIP(), l.Iface())
+	}
 	x.out("  vpn_dynamic:        таймаут %s", shortDuration(cfg.VPNDynamicTimeout))
 	x.out("")
 
@@ -163,8 +170,11 @@ func cmdCheckConfig(x *ctx, args []string) int {
 		x.out("%sПроверка файлов:%s", x.c.Yellow, x.c.NC)
 	}
 
+	var cfg *config.Config
 	if routerConf != "" {
-		_, warns, err := config.Load(routerConf)
+		var warns []config.Warning
+		var err error
+		cfg, warns, err = config.Load(routerConf)
 		var errs []string
 		if err != nil {
 			errs = strings.Split(err.Error(), "\n")
@@ -183,6 +193,7 @@ func cmdCheckConfig(x *ctx, args []string) int {
 			for _, ln := range l.Invalid() {
 				errs = append(errs, "строка "+strconv.Itoa(ln.Num)+": "+ln.Err.Error())
 			}
+			errs = append(errs, localOverlaps(cfg, l)...)
 		}
 		report(vpnFile, errs)
 	}
@@ -203,6 +214,27 @@ func cmdCheckConfig(x *ctx, args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// localOverlaps — подсети из списка, пересекающиеся с подсетями локальных
+// сервисов: трафик к своему шлюзу сервис отправил бы в туннель.
+func localOverlaps(cfg *config.Config, l *lists.VPNList) []string {
+	if cfg == nil {
+		return nil
+	}
+	var errs []string
+	for _, ln := range l.Lines {
+		if ln.Entry == nil || ln.Entry.Kind != lists.KindNet {
+			continue
+		}
+		for _, lc := range cfg.LocalClients {
+			if ln.Entry.Prefix.Overlaps(lc.Net) {
+				errs = append(errs, fmt.Sprintf("строка %d: %s пересекается с подсетью локального сервиса %s (%s, LOCAL_CLIENTS)",
+					ln.Num, ln.Entry.Prefix, lc.Name, lc.Net))
+			}
+		}
+	}
+	return errs
 }
 
 // shortDuration — 24h вместо 24h0m0s.

@@ -75,6 +75,10 @@ type daemon struct {
 	summary string
 	healthy bool
 	tunUp   bool
+	// tunIndex — ifindex интерфейса туннеля при последнем применении маршрутов
+	// (0 — интерфейса нет): быстрый перезапуск GOST пересоздаёт tun с новым
+	// индексом, и маршрут в него, удалённый ядром вместе со старым, нужно вернуть.
+	tunIndex int
 }
 
 // Run работает до SIGTERM/SIGINT. Ошибка первого применения конфигурации
@@ -190,6 +194,11 @@ func (d *daemon) apply() error {
 		Tun:            cfg.VPNTun,
 		Bypass:         cfg.VPNFailoverOpen && !healthy,
 	}
+	// Правила для veth локальных сервисов ставятся по имени: интерфейс может
+	// появиться позже (routerd-local@<имя>.service) — правила уже на месте.
+	for _, l := range cfg.LocalClients {
+		spec.Locals = append(spec.Locals, firewall.Local{Iface: l.Iface(), Net: l.Net})
+	}
 	recreated, err := firewall.Apply(d.nft, spec)
 	if err != nil {
 		return err
@@ -212,8 +221,12 @@ func (d *daemon) apply() error {
 	// задерживать готовность routerd (иначе systemd убьёт его по таймауту старта).
 	go d.syncPihole(cfg)
 	d.cfg, d.spec, d.healthy, d.tunUp = cfg, spec, healthy, tunUp
+	d.tunIndex = d.tunLinkIndex(spec.Tun)
 	d.summary = fmt.Sprintf("доменов %d, IP/подсетей %d, DNS-override %d, режим %s",
 		domains, len(static), len(overrides), cfg.VPNMode)
+	if n := len(cfg.LocalClients); n > 0 {
+		d.summary += fmt.Sprintf(", локальных сервисов %d", n)
+	}
 	return nil
 }
 
@@ -255,7 +268,10 @@ func (d *daemon) tick() {
 	healthy := d.tunnelHealthy(d.cfg)
 	bypass := d.cfg.VPNFailoverOpen && !healthy
 	_, tunUp := routing.TunLink(d.nl, d.spec.Tun)
-	tunChanged := d.spec.Mode == firewall.ModeRoute && tunUp != d.tunUp
+	// Сравнивается и индекс: GOST, перезапущенный быстрее healthInterval,
+	// снаружи выглядит как «tun был и есть», но интерфейс уже другой.
+	tunIndex := d.tunLinkIndex(d.spec.Tun)
+	tunChanged := d.spec.Mode == firewall.ModeRoute && (tunUp != d.tunUp || tunIndex != d.tunIndex)
 	if healthy == d.healthy && bypass == d.spec.Bypass && !tunChanged {
 		return
 	}
@@ -287,8 +303,16 @@ func (d *daemon) tick() {
 			d.Log.Info("перехват восстановлен")
 		}
 	}
-	d.spec, d.healthy, d.tunUp = spec, healthy, up
+	d.spec, d.healthy, d.tunUp, d.tunIndex = spec, healthy, up, tunIndex
 	notify("STATUS=" + d.status())
+}
+
+// tunLinkIndex — ifindex поднятого интерфейса туннеля, 0 — интерфейса нет.
+func (d *daemon) tunLinkIndex(name string) int {
+	if link, ok := routing.TunLink(d.nl, name); ok {
+		return link.Attrs().Index
+	}
+	return 0
 }
 
 // status — текст для StatusText юнита и журнала.

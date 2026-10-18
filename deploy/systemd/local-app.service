@@ -1,0 +1,26 @@
+# Пример юнита сервиса на самой RPi, трафик которого обрабатывается routerd
+# так же, как трафик устройств LAN: адреса из vpn_domains.txt — через
+# туннель, остальное — напрямую, DNS — через routerd.
+#
+# 1. router.conf:  LOCAL_CLIENTS="app:10.99.0.0/30"  (имя:подсеть, см. описание ключа)
+#    и sudo rsc reload-vpn-domains — routerd применит правила для сервиса.
+# 2. Этот файл — в /etc/systemd/system/<свой-сервис>.service; «app» везде
+#    заменить на имя из LOCAL_CLIENTS, ExecStart — на свою программу.
+# 3. sudo systemctl daemon-reload && sudo systemctl enable --now <свой-сервис>
+#    Сеть сервиса (routerd-local@app.service) поднимется сама.
+[Unit]
+Description=Локальный сервис за routerd (пример)
+Requires=routerd-local@app.service
+After=routerd-local@app.service routerd.service
+
+[Service]
+ExecStart=/usr/local/bin/my-app
+# Сеть сервиса: свой namespace, шлюз и DNS — RPi.
+NetworkNamespacePath=/run/netns/app
+BindReadOnlyPaths=/etc/netns/app/resolv.conf:/etc/resolv.conf
+DynamicUser=yes
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

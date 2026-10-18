@@ -6,8 +6,9 @@
 # Что делает:
 #   1. Ставит недостающее: dnscrypt-proxy (apt), Pi-hole (официальный
 #      установщик).
-#   2. Ставит routerd, команды rsc и router_service_ctl, routerd.service, автодополнение
-#      bash/zsh; конфиги — примеры, только если их нет.
+#   2. Ставит routerd, команды rsc и router_service_ctl, routerd.service,
+#      шаблон routerd-local@.service (LOCAL_CLIENTS), автодополнение bash/zsh;
+#      конфиги — примеры, только если их нет.
 #   3. check-config, apply-network --dry-run, включение и запуск.
 #
 # Клиент туннеля (GOST, юнит VPN_SERVICE — по умолчанию gost-run.service)
@@ -209,6 +210,9 @@ done
 
 install -m 0644 "${SRC_DIR}/deploy/systemd/routerd.service" "${UNIT_DIR}/routerd.service"
 log_info "  ${UNIT_DIR}/routerd.service"
+# Сеть локальных сервисов (LOCAL_CLIENTS) — шаблон, экземпляры подключает юнит сервиса.
+install -m 0644 "${SRC_DIR}/deploy/systemd/routerd-local@.service" "${UNIT_DIR}/routerd-local@.service"
+log_info "  ${UNIT_DIR}/routerd-local@.service"
 mkdir -p "$(dirname "${BASH_COMPLETION}")" "$(dirname "${ZSH_COMPLETION}")"
 "${BIN_DIR}/routerd" completion bash >"${BASH_COMPLETION}"
 # bash-completion подгружает файл по имени команды — второе имя ссылкой.

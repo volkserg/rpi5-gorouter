@@ -1,0 +1,31 @@
+[Unit]
+Description=routerd: сеть локального сервиса %i (LOCAL_CLIENTS)
+Documentation=https://github.com/volkserg/rpi5-gorouter
+# Создаёт network namespace /run/netns/%i с veth-парой rc-%i ↔ eth0 и
+# /etc/netns/%i/resolv.conf (DNS — routerd). Адреса — из LOCAL_CLIENTS
+# в router.conf. Правила для трафика сервиса применяет routerd.service.
+# Юнит сервиса подключается к namespace так:
+#   Requires=routerd-local@%i.service
+#   After=routerd-local@%i.service
+#   NetworkNamespacePath=/run/netns/%i
+#   BindReadOnlyPaths=/etc/netns/%i/resolv.conf:/etc/resolv.conf
+# Пример — deploy/systemd/local-app.service.
+DefaultDependencies=no
+After=local-fs.target systemd-modules-load.service
+Before=network.target
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/routerd local-client up %i
+ExecStop=/usr/local/bin/routerd local-client down %i
+# Без ProtectSystem, PrivateTmp и подобного: namespace закрепляется
+# монтированием в /run/netns, и оно должно быть видно всей системе, а не
+# только этому юниту. Нужны только эти права.
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

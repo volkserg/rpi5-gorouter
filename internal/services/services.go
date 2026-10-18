@@ -21,6 +21,9 @@ const (
 	UnitSystemDnsmasq = "dnsmasq.service"
 )
 
+// LocalUnit — юнит сети локального сервиса (LOCAL_CLIENTS).
+func LocalUnit(name string) string { return "routerd-local@" + name + ".service" }
+
 // State — состояние юнита.
 type State struct {
 	Name      string

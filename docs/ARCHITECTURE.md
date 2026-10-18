@@ -137,6 +137,36 @@ dnscrypt-proxy, GOST.
   повторяет запуск — остановленный Pi-hole означал бы отсутствие DNS в LAN.
 - `send_redirects=0` выставляется и для `all`, и для `IFACE`: ядро объединяет
   их по OR, и иначе RPi рассылала бы клиентам ICMP redirect на роутер.
+- В режиме route routerd следит не только за тем, поднят ли интерфейс туннеля,
+  но и за его индексом: GOST, перезапущенный быстрее интервала проверки (2 с),
+  пересоздаёт tun, ядро удаляет маршрут в старый интерфейс, и его нужно вернуть.
+
+### Локальные сервисы (LOCAL_CLIENTS)
+
+Трафик процессов самой RPi проходит цепочку `output`, а правила routerd
+привязаны к входному интерфейсу (`iifname`). Чтобы программа на RPi ходила в
+сеть как устройство LAN, она получает свой network namespace:
+
+- `routerd-local@<имя>.service` (oneshot, `routerd local-client up|down`)
+  создаёт `/run/netns/<имя>`, veth-пару `rc-<имя>` ↔ `eth0` с адресами из
+  `LOCAL_CLIENTS` (первый адрес подсети — RPi, второй — сервис), маршрут по
+  умолчанию через RPi и `/etc/netns/<имя>/resolv.conf` с DNS routerd
+  (`RPI5_IP`). Существующий namespace переиспользуется, veth пересоздаётся.
+- Это отдельный юнит, а не демон: создание namespace требует `CAP_SYS_ADMIN`
+  и общего с системой пространства монтирования (namespace закрепляется
+  bind-монтированием в `/run/netns`), а демон работает в урезанном юните.
+  Поэтому в шаблоне нет `ProtectSystem`, `PrivateTmp` и `NetworkNamespacePath`
+  — с ними systemd дал бы юниту своё пространство монтирования.
+- routerd повторяет правила LAN для каждого `rc-<имя>` (перехват во всех
+  режимах, отклонение QUIC) и добавляет masquerade для подсети сервиса.
+  Правила ставятся по имени интерфейса, поэтому порядок запуска юнитов не
+  важен; перезапуск routerd не трогает namespace и работающий сервис.
+- Юнит сервиса подключается строками `Requires=`/`After=` на
+  `routerd-local@<имя>`, `NetworkNamespacePath=` и `BindReadOnlyPaths=` для
+  resolv.conf ([пример](../deploy/systemd/local-app.service)): остановка сети
+  останавливает и сервис.
+- `check-config` отклоняет подсеть, пересекающуюся с LAN, другими сервисами и
+  подсетями из `vpn_domains.txt` (трафик сервиса к его шлюзу ушёл бы в туннель).
 
 ### Режимы VPN
 
@@ -205,9 +235,10 @@ internal/dhcp/        DHCP: пул и аренды (чистая логика), 
 internal/routing/     policy routing через netlink: ip rule, таблица 152 (Linux)
 internal/pihole/      сверка и точечная правка ключей цепочки в pihole.toml
 internal/netcfg/      apply-network: NetworkManager по D-Bus + Checkpoint
+internal/localclient/ сеть локальных сервисов: netns, veth, resolv.conf (routerd local-client)
 internal/daemon/      routerd run: применение, sd_notify (notify-reload), SIGHUP,
                       слежение за туннелем, VPN_FAILOVER, очистка
-deploy/systemd/       routerd.service, пример gost-run.service
+deploy/systemd/       routerd.service, routerd-local@.service, примеры gost-run.service и local-app.service
 deploy/config/        примеры router.conf (все ключи), vpn_domains.txt, dns_override.txt
 install.sh            установка/обновление на RPi (bash — единственное место вне Go)
 ansible/rpi5_gorouter/ коллекция Ansible: роль routerd (установка из релиза, конфиги из инвентаря)
@@ -225,6 +256,8 @@ Linux-специфичное — под `//go:build linux`, проверяетс
 | `/var/lib/routerd/leases.json` | аренды DHCP |
 | `/etc/pihole/pihole.toml` | конфиг Pi-hole; routerd сверяет в нём только ключи цепочки DNS |
 | `/etc/systemd/system/routerd.service` | юнит routerd |
+| `/etc/systemd/system/routerd-local@.service` | сеть локального сервиса (`LOCAL_CLIENTS`) |
+| `/run/netns/<имя>`, `/etc/netns/<имя>/resolv.conf` | namespace и DNS локального сервиса |
 | `/etc/systemd/system/dnscrypt-proxy.socket.d/routerd.conf` | адрес dnscrypt-proxy (`DNSCRYPT_ADDR`) |
 | `/usr/local/bin/routerd`, `rsc`, `router_service_ctl` | бинарник и symlink'и на него |
 

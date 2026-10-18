@@ -28,6 +28,7 @@ orb -m routerd-lab sudo ./testbed/lab.sh test-install   # повторный з�
 orb -m routerd-lab sudo ./testbed/lab.sh test-ansible   # роль Ansible во всех режимах (после make dist)
 orbctl restart routerd-lab && orb -m routerd-lab sudo ./testbed/lab.sh test-boot  # после перезагрузки
 orb -m routerd-lab sudo ./testbed/lab.sh test-no-tunnel # без клиента туннеля, затем GOST без перезапуска
+orb -m routerd-lab sudo ./testbed/lab.sh test-local-client  # сервис на RPi как клиент LAN, все режимы
 orb -m routerd-lab sudo ./testbed/lab.sh test-idle 300  # долгое простаивающее соединение (долго)
 orb -m routerd-lab sudo ./testbed/lab.sh mode tproxy open
 ```
@@ -38,6 +39,12 @@ DNS на стенде — как на бою: routerd → Pi-hole (:5353) → dn
 
 Туннель — два узла (входной и выходной) с nginx и GOST, как описано в
 [docs/TUNNEL.md](../docs/TUNNEL.md); конфиги — в [nodes/](nodes/).
+
+Локальный сервис стенда — `lab-local-app.service`, собранный из примера
+[deploy/systemd/local-app.service](../deploy/systemd/local-app.service), в
+namespace `lab-app` (`LOCAL_CLIENTS` в `testbed/conf/router.conf`). Его сеть
+создаётся из namespace `rpi` через `nsenter --net`: с `NetworkNamespacePath`
+systemd дал бы юниту своё пространство монтирования.
 
 ## Интеграционные тесты nftables
 

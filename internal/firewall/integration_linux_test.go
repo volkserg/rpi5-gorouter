@@ -257,3 +257,30 @@ func TestDynamicLearn(t *testing.T) {
 	d.Learn([]netip.Addr{netip.MustParseAddr("203.0.113.20")}, time.Minute)
 	mustContain(t, run("nft", "list", "set", "ip", TableName, SetDynamic), "203.0.113.20 timeout 1m")
 }
+
+// Локальные сервисы: те же правила для их veth и NAT их подсети, во всех режимах.
+func TestLocals(t *testing.T) {
+	c, run := testNS(t)
+	for _, mode := range []Mode{ModeRedirect, ModeTProxy, ModeRoute} {
+		s := spec("10.20.0.0/16")
+		s.Mode, s.Tun = mode, "tun0"
+		s.Locals = []Local{{Iface: "rc-app", Net: netip.MustParsePrefix("10.99.0.0/30")}}
+		if _, err := Apply(c, s); err != nil {
+			t.Fatalf("%s: %v", mode, err)
+		}
+		out := run("nft", "list", "table", "ip", TableName)
+		mustContain(t, out,
+			`iifname "eth0"`, `iifname "rc-app"`,
+			"ip saddr 10.99.0.0/30 ip daddr != 10.99.0.0/30 counter",
+			`iifname "rc-app" udp dport 443 ip daddr @vpn_static counter`,
+		)
+		switch mode {
+		case ModeRedirect:
+			mustContain(t, out, `iifname "rc-app" meta l4proto tcp ip daddr @vpn_static counter`)
+		case ModeTProxy:
+			mustContain(t, out, `iifname "rc-app" meta l4proto udp ip daddr @vpn_dynamic counter`)
+		case ModeRoute:
+			mustContain(t, out, `iifname "rc-app" ct state new ip daddr @vpn_static counter`)
+		}
+	}
+}

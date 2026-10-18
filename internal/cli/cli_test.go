@@ -160,3 +160,23 @@ func TestCheckConfigFiles(t *testing.T) {
 		t.Error("неизвестный флаг — ошибка")
 	}
 }
+
+// Локальные сервисы: в info, а подсеть из списка, пересекающаяся с подсетью
+// сервиса, — ошибка check-config.
+func TestLocalClients(t *testing.T) {
+	dir := writeFiles(t, map[string]string{
+		"router.conf":     "LOCAL_CLIENTS=\"app:10.99.0.0/30\"\n",
+		"vpn_domains.txt": "intranet.com\n10.20.0.0/16\n",
+	})
+	if out, _, code := run(t, dir, "check-config"); code != 0 {
+		t.Errorf("code=%d\n%s", code, out)
+	}
+	if out, _, _ := run(t, dir, "info"); !strings.Contains(out, "Локальные сервисы:  app 10.99.0.0/30: адрес 10.99.0.2, шлюз 10.99.0.1 (rc-app)") {
+		t.Errorf("info:\n%s", out)
+	}
+	os.WriteFile(filepath.Join(dir, "vpn_domains.txt"), []byte("intranet.com\n10.0.0.0/8\n"), 0o644)
+	out, _, code := run(t, dir, "check-config")
+	if code != 1 || !strings.Contains(out, "строка 2: 10.0.0.0/8 пересекается с подсетью локального сервиса app") {
+		t.Errorf("пересечение: code=%d\n%s", code, out)
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"github.com/volkserg/rpi5-gorouter/internal/config"
 	"github.com/volkserg/rpi5-gorouter/internal/dhcp"
 	"github.com/volkserg/rpi5-gorouter/internal/lists"
+	"github.com/volkserg/rpi5-gorouter/internal/localclient"
 	"github.com/volkserg/rpi5-gorouter/internal/pihole"
 	"github.com/volkserg/rpi5-gorouter/internal/services"
 	"github.com/volkserg/rpi5-gorouter/internal/sysinfo"
@@ -228,7 +229,39 @@ func cmdStatus(x *ctx, _ []string) int {
 	x.out("%sDHCP:%s", x.c.Yellow, x.c.NC)
 	x.out("  :67    routerd        %s", listen(false, true, 67))
 	x.leases()
+
+	if cfg, _, err := config.Load(x.routerConf()); err == nil && len(cfg.LocalClients) > 0 {
+		x.out("")
+		x.localClients(ctx, cfg)
+	}
 	return 0
+}
+
+// localClients печатает состояние локальных сервисов: юнит их сети и
+// namespace. Сами сервисы — юниты пользователя, их состояние здесь не видно.
+func (x *ctx) localClients(ctx context.Context, cfg *config.Config) {
+	x.out("%sЛокальные сервисы (LOCAL_CLIENTS):%s", x.c.Yellow, x.c.NC)
+	var units []string
+	for _, l := range cfg.LocalClients {
+		units = append(units, services.LocalUnit(l.Name))
+	}
+	var sts []services.State
+	if m, err := x.Services(ctx); err == nil {
+		sts, _ = m.States(ctx, units...)
+		m.Close()
+	}
+	for i, l := range cfg.LocalClients {
+		if i < len(sts) {
+			x.unitLine(sts[i])
+		} else {
+			x.out("  %s?%s %s — состояние неизвестно", x.c.Yellow, x.c.NC, strings.TrimSuffix(units[i], ".service"))
+		}
+		netns := "нет"
+		if _, err := os.Stat(localclient.NetnsPath(l.Name)); err == nil {
+			netns = "есть"
+		}
+		x.out("      %s/%d, шлюз %s (%s), %s: %s", l.ClientIP(), l.Net.Bits(), l.HostIP(), l.Iface(), localclient.NetnsPath(l.Name), netns)
+	}
 }
 
 // leases печатает действующие аренды DHCP.

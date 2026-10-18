@@ -214,3 +214,45 @@ func TestVPNService(t *testing.T) {
 		}
 	}
 }
+
+func TestLocalClients(t *testing.T) {
+	cfg, err := FromValues(nil)
+	if err != nil || len(cfg.LocalClients) != 0 {
+		t.Fatalf("по умолчанию локальных сервисов нет: %v %v", cfg.LocalClients, err)
+	}
+	cfg, err = FromValues(map[string]string{"LOCAL_CLIENTS": " app:10.99.0.0/30   web-2:10.99.0.8/29 "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.LocalClients) != 2 {
+		t.Fatalf("сервисы: %+v", cfg.LocalClients)
+	}
+	app, ok := cfg.LocalClient("app")
+	if !ok || app.Iface() != "rc-app" || app.HostIP().String() != "10.99.0.1" || app.ClientIP().String() != "10.99.0.2" {
+		t.Errorf("app: %+v %s %s %s", app, app.Iface(), app.HostIP(), app.ClientIP())
+	}
+	if web, _ := cfg.LocalClient("web-2"); web.HostIP().String() != "10.99.0.9" || web.ClientIP().String() != "10.99.0.10" {
+		t.Errorf("web-2: %s %s", web.HostIP(), web.ClientIP())
+	}
+	if _, ok := cfg.LocalClient("nope"); ok {
+		t.Error("неизвестное имя найдено")
+	}
+	for name, v := range map[string]string{
+		"без подсети":          "app",
+		"длинное имя":          "abcdefghijklm:10.99.0.0/30",
+		"заглавные":            "App:10.99.0.0/30",
+		"дефис в начале":       "-app:10.99.0.0/30",
+		"не адрес сети":        "app:10.99.0.1/30",
+		"префикс /31":          "app:10.99.0.0/31",
+		"префикс /16":          "app:10.99.0.0/16",
+		"IPv6":                 "app:fd00::/126",
+		"пересечение с LAN":    "app:192.168.3.0/30",
+		"повтор имени":         "app:10.99.0.0/30 app:10.99.0.4/30",
+		"пересечение подсетей": "app:10.99.0.0/29 web:10.99.0.4/30",
+		"мусор вместо подсети": "app:ten",
+	} {
+		if _, err := FromValues(map[string]string{"LOCAL_CLIENTS": v}); err == nil {
+			t.Errorf("%s (%q): ожидалась ошибка", name, v)
+		}
+	}
+}

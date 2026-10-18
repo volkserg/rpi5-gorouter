@@ -83,6 +83,41 @@ type Config struct {
 	PiholeTOML string
 	// DNSCryptAddr — адрес dnscrypt-proxy (upstream Pi-hole).
 	DNSCryptAddr netip.AddrPort
+
+	// LocalClients — сервисы на самой RPi, которые работают как клиенты LAN.
+	LocalClients []LocalClient
+}
+
+// LocalIfacePrefix — префикс имени veth локального сервиса на стороне RPi.
+const LocalIfacePrefix = "rc-"
+
+// LocalClient — сервис на самой RPi со своим network namespace, связанным
+// с RPi veth-парой (LOCAL_CLIENTS). Его трафик проходит через правила routerd
+// так же, как трафик устройств LAN.
+type LocalClient struct {
+	// Name — имя namespace (/run/netns/<Name>) и экземпляра routerd-local@<Name>.
+	Name string
+	// Net — подсеть veth-пары: первый адрес узла — RPi, второй — сервис.
+	Net netip.Prefix
+}
+
+// Iface — veth на стороне RPi.
+func (l LocalClient) Iface() string { return LocalIfacePrefix + l.Name }
+
+// HostIP — адрес RPi в подсети сервиса (шлюз сервиса).
+func (l LocalClient) HostIP() netip.Addr { return l.Net.Addr().Next() }
+
+// ClientIP — адрес сервиса.
+func (l LocalClient) ClientIP() netip.Addr { return l.HostIP().Next() }
+
+// LocalClient возвращает локальный сервис по имени.
+func (c *Config) LocalClient(name string) (LocalClient, bool) {
+	for _, l := range c.LocalClients {
+		if l.Name == name {
+			return l, true
+		}
+	}
+	return LocalClient{}, false
 }
 
 // Значения FILTER_AAAA.
@@ -121,7 +156,12 @@ var defaults = map[string]string{
 	"PIHOLE_MANAGE":       "yes",
 	"PIHOLE_TOML":         "/etc/pihole/pihole.toml",
 	"DNSCRYPT_ADDR":       "127.0.0.1#5053",
+	"LOCAL_CLIENTS":       "",
 }
+
+// localNameRe — имя локального сервиса: rc-<имя> должно уложиться в 15 символов
+// имени интерфейса, а <имя> — быть допустимым именем экземпляра юнита.
+var localNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,11}$`)
 
 // unitNameRe — имя service-юнита systemd (суффикс .service можно не писать).
 var unitNameRe = regexp.MustCompile(`^[A-Za-z0-9:_.@-]+\.service$`)
@@ -285,6 +325,9 @@ func FromValues(values map[string]string) (*Config, error) {
 	} else {
 		cfg.LANSubnet = p
 	}
+	locals, lerrs := parseLocalClients(get("LOCAL_CLIENTS"))
+	cfg.LocalClients = locals
+	errs = append(errs, lerrs...)
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
 	}
@@ -348,7 +391,50 @@ func (c *Config) Validate() error {
 			fail("%s=%s попадает в пул DHCP %s - %s", h.key, h.a, c.PoolStart, c.PoolEnd)
 		}
 	}
+	for i, l := range c.LocalClients {
+		if l.Net.Overlaps(p) {
+			fail("LOCAL_CLIENTS: подсеть %s (%s) пересекается с LAN_SUBNET %s", l.Net, l.Name, p)
+		}
+		for _, o := range c.LocalClients[:i] {
+			if l.Name == o.Name {
+				fail("LOCAL_CLIENTS: имя %s указано дважды", l.Name)
+			} else if l.Net.Overlaps(o.Net) {
+				fail("LOCAL_CLIENTS: подсети %s (%s) и %s (%s) пересекаются", l.Net, l.Name, o.Net, o.Name)
+			}
+		}
+	}
 	return errors.Join(errs...)
+}
+
+// parseLocalClients разбирает LOCAL_CLIENTS: «имя:подсеть» через пробел.
+func parseLocalClients(s string) ([]LocalClient, []error) {
+	var out []LocalClient
+	var errs []error
+	for _, f := range strings.Fields(s) {
+		name, pfx, ok := strings.Cut(f, ":")
+		if !ok {
+			errs = append(errs, fmt.Errorf("LOCAL_CLIENTS: %q — ожидается имя:подсеть (например, app:10.99.0.0/30)", f))
+			continue
+		}
+		if !localNameRe.MatchString(name) {
+			errs = append(errs, fmt.Errorf("LOCAL_CLIENTS: имя %q — до 12 символов: строчные латинские буквы, цифры и дефис", name))
+			continue
+		}
+		p, err := netip.ParsePrefix(pfx)
+		switch {
+		case err != nil || !p.Addr().Is4():
+			errs = append(errs, fmt.Errorf("LOCAL_CLIENTS: %s — подсеть %q: ожидается IPv4 в виде a.b.c.d/N", name, pfx))
+			continue
+		case p.Bits() < 24 || p.Bits() > 30:
+			errs = append(errs, fmt.Errorf("LOCAL_CLIENTS: %s — подсеть %s: длина префикса от 24 до 30", name, p))
+			continue
+		case p.Masked() != p:
+			errs = append(errs, fmt.Errorf("LOCAL_CLIENTS: %s — подсеть %s: адрес должен быть адресом сети (%s)", name, p, p.Masked()))
+			continue
+		}
+		out = append(out, LocalClient{Name: name, Net: p})
+	}
+	return out, errs
 }
 
 // isHost — адрес лежит в LAN и не совпадает с адресом сети или broadcast.

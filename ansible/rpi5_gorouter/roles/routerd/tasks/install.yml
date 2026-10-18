@@ -57,6 +57,15 @@
     mode: "0644"
   notify: [daemon-reload, restart routerd]
 
+# Сеть локальных сервисов (LOCAL_CLIENTS): экземпляры подключает юнит сервиса.
+- name: Шаблон routerd-local@.service
+  ansible.builtin.copy:
+    src: "{{ _routerd_dir }}/deploy/systemd/routerd-local@.service"
+    dest: /etc/systemd/system/routerd-local@.service
+    remote_src: true
+    mode: "0644"
+  notify: [daemon-reload]
+
 - name: Скрипты автодополнения
   ansible.builtin.command: "{{ routerd_bin_dir }}/routerd completion {{ item }}"
   loop: [bash, zsh]

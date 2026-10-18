@@ -119,45 +119,56 @@ func build(c *nftables.Conn, s Spec) {
 		c.AddRule(&nftables.Rule{Table: t, Chain: ch, Exprs: concat(parts...)})
 	}
 	sets := []*nftables.Set{static, dynamic}
+	// Трафик LAN и локальных сервисов (veth) обрабатывается одинаково;
+	// правила повторяются для каждого входного интерфейса.
+	ins := s.inIfaces()
 
 	if !s.Bypass {
 		switch s.Mode {
 		case ModeRedirect:
 			// TCP с LAN к адресам из списков → локальный слушатель туннеля.
-			for _, set := range sets {
-				rule(pre, ifaceIn(s.Iface), l4proto(unix.IPPROTO_TCP), daddrIn(set),
-					counter(), redirectTo(s.RedirectPort))
+			for _, in := range ins {
+				for _, set := range sets {
+					rule(pre, ifaceIn(in), l4proto(unix.IPPROTO_TCP), daddrIn(set),
+						counter(), redirectTo(s.RedirectPort))
+				}
 			}
 		case ModeTProxy:
 			// Пакеты уже перехваченных соединений (сокет слушателя прозрачный).
 			rule(mangle, l4proto(unix.IPPROTO_TCP), socketTransparent(), setMark(Mark), verdict(expr.VerdictAccept))
-			if s.QUICReject {
-				// QUIC не перехватываем — его отклонит forward-цепочка ниже.
-				rule(mangle, ifaceIn(s.Iface), l4proto(unix.IPPROTO_UDP), dport(443), verdict(expr.VerdictReturn))
-			}
-			for _, set := range sets {
-				for _, proto := range []byte{unix.IPPROTO_TCP, unix.IPPROTO_UDP} {
-					rule(mangle, ifaceIn(s.Iface), l4proto(proto), daddrIn(set),
-						counter(), tproxyTo(s.RedirectPort), setMark(Mark), verdict(expr.VerdictAccept))
+			for _, in := range ins {
+				if s.QUICReject {
+					// QUIC не перехватываем — его отклонит forward-цепочка ниже.
+					rule(mangle, ifaceIn(in), l4proto(unix.IPPROTO_UDP), dport(443), verdict(expr.VerdictReturn))
+				}
+				for _, set := range sets {
+					for _, proto := range []byte{unix.IPPROTO_TCP, unix.IPPROTO_UDP} {
+						rule(mangle, ifaceIn(in), l4proto(proto), daddrIn(set),
+							counter(), tproxyTo(s.RedirectPort), setMark(Mark), verdict(expr.VerdictAccept))
+					}
 				}
 			}
 			// Слушателя нет (туннель упал): tproxy не срабатывает и пакет ушёл бы
 			// напрямую. Помечаем его всё равно — он будет доставлен локально,
 			// где клиент получит RST / port unreachable (VPN_FAILOVER=closed).
-			for _, set := range sets {
-				for _, proto := range []byte{unix.IPPROTO_TCP, unix.IPPROTO_UDP} {
-					rule(mangle, ifaceIn(s.Iface), l4proto(proto), daddrIn(set), setMark(Mark))
+			for _, in := range ins {
+				for _, set := range sets {
+					for _, proto := range []byte{unix.IPPROTO_TCP, unix.IPPROTO_UDP} {
+						rule(mangle, ifaceIn(in), l4proto(proto), daddrIn(set), setMark(Mark))
+					}
 				}
 			}
 		case ModeRoute:
-			// Решение принимается на первом пакете соединения и запоминается
-			// в ct mark: истечение записи в vpn_dynamic не рвёт соединение.
-			for _, set := range sets {
-				rule(mangle, ifaceIn(s.Iface), ctStateNew(), daddrIn(set), counter(), setCtMark(Mark))
+			for _, in := range ins {
+				// Решение принимается на первом пакете соединения и запоминается
+				// в ct mark: истечение записи в vpn_dynamic не рвёт соединение.
+				for _, set := range sets {
+					rule(mangle, ifaceIn(in), ctStateNew(), daddrIn(set), counter(), setCtMark(Mark))
+				}
+				// Только для пакетов из LAN: ответы из туннеля несут тот же ct mark,
+				// и с fwmark они ушли бы обратно в туннель.
+				rule(mangle, ifaceIn(in), ctMarkIs(Mark), setMark(Mark))
 			}
-			// Только для пакетов из LAN: ответы из туннеля несут тот же ct mark,
-			// и с fwmark они ушли бы обратно в туннель.
-			rule(mangle, ifaceIn(s.Iface), ctMarkIs(Mark), setMark(Mark))
 		}
 	}
 
@@ -165,13 +176,20 @@ func build(c *nftables.Conn, s Spec) {
 	// в режиме route — и в интерфейс туннеля).
 	rule(post, addrInPrefix(offSaddr, s.LAN, true), addrInPrefix(offDaddr, s.LAN, false),
 		counter(), []expr.Any{&expr.Masq{}})
+	// Локальные сервисы — так же: их подсети снаружи (и в LAN) не известны.
+	for _, l := range s.Locals {
+		rule(post, addrInPrefix(offSaddr, l.Net, true), addrInPrefix(offDaddr, l.Net, false),
+			counter(), []expr.Any{&expr.Masq{}})
+	}
 
 	if s.QUICReject {
 		// QUIC к адресам из списков отклоняется: браузер сразу уходит на TCP,
 		// который идёт через туннель.
-		for _, set := range sets {
-			rule(fwd, ifaceIn(s.Iface), l4proto(unix.IPPROTO_UDP), dport(443), daddrIn(set),
-				counter(), rejectPortUnreachable())
+		for _, in := range ins {
+			for _, set := range sets {
+				rule(fwd, ifaceIn(in), l4proto(unix.IPPROTO_UDP), dport(443), daddrIn(set),
+					counter(), rejectPortUnreachable())
+			}
 		}
 	}
 	if s.Mode == ModeRoute {

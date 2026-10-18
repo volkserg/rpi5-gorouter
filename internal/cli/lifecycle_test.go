@@ -161,3 +161,23 @@ func TestRestartStartsAfterStopFailure(t *testing.T) {
 		t.Errorf("code=%d, routerd должен работать: %v", code, f.Units[services.UnitRouterd])
 	}
 }
+
+func TestStatusLocalClients(t *testing.T) {
+	dir := writeFiles(t, map[string]string{"router.conf": "LOCAL_CLIENTS=\"app:10.99.0.0/30 web:10.99.0.4/30\"\n"})
+	f := servicestest.New(services.LocalUnit("app"))
+	f.SetActive(services.LocalUnit("app"))
+	out, _, code := runFake(dir, f, "status")
+	if code != 0 {
+		t.Fatal(code)
+	}
+	for _, want := range []string{
+		"Локальные сервисы (LOCAL_CLIENTS):",
+		"● routerd-local@app — запущен",
+		"      10.99.0.2/30, шлюз 10.99.0.1 (rc-app), /run/netns/app:",
+		"? routerd-local@web — не установлен",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("нет %q:\n%s", want, out)
+		}
+	}
+}

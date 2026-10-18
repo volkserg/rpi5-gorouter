@@ -36,6 +36,7 @@
 #   lab.sh test-ansible   роль Ansible во всех режимах (после make dist)
 #   lab.sh test-boot      после перезагрузки машины стенда: автозапуск, аварийный перезапуск
 #   lab.sh test-no-tunnel routerd без клиента туннеля, затем GOST без перезапуска routerd
+#   lab.sh test-local-client  сервис на RPi как клиент LAN (LOCAL_CLIENTS), все режимы
 #   lab.sh test-idle [с]  долгое простаивающее соединение через туннель (по умолчанию 120 с)
 #   lab.sh status         адреса и маршруты во всех namespace
 #   lab.sh exec <ns> cmd  выполнить команду в namespace (rpi, client, router, inet, entry, exit, lan)
@@ -378,7 +379,7 @@ selftest() {
 LAB_UNITS=(lab-dns-public lab-dohd lab-dns-corp lab-dns-vpn lab-web-direct lab-web-vpn
     lab-nginx-entry lab-gost-entry lab-nginx-exit lab-gost-exit)
 # Юниты стенда: управляемые routerd (имена как на бою) и вспомогательные.
-STAND_UNITS=(gost-run routerd pihole-FTL dnscrypt-proxy dnscrypt-proxy.socket
+STAND_UNITS=(lab-local-app routerd-local@lab-app gost-run routerd pihole-FTL dnscrypt-proxy dnscrypt-proxy.socket
     lab-dns-corp lab-dns-vpn lab-dns-public lab-dohd lab-web-direct lab-web-vpn
     lab-nginx-entry lab-gost-entry lab-nginx-exit lab-gost-exit)
 
@@ -609,6 +610,20 @@ cmd_install() {
     # (bootstrap, bootstrap-dns), запуск — ниже, после сервисов стенда.
     run_installer --skip-deps --no-start
     in_ns routerd rpi
+    # Сеть локального сервиса создаётся из namespace rpi (на бою — из основного).
+    # Через nsenter --net, а не NetworkNamespacePath: с ним systemd даёт юниту своё
+    # пространство монтирования, и закрепление namespace в /run/netns не было бы
+    # видно снаружи. Остальное — как в боевом шаблоне.
+    mkdir -p "${UNIT_DIR}/routerd-local@.service.d"
+    cat >"${UNIT_DIR}/routerd-local@.service.d/lab-netns.conf" <<'UNIT'
+[Service]
+ExecStart=
+ExecStart=/usr/bin/nsenter --net=/run/netns/lab-rpi /usr/local/bin/routerd local-client up %i
+ExecStop=
+ExecStop=/usr/bin/nsenter --net=/run/netns/lab-rpi /usr/local/bin/routerd local-client down %i
+UNIT
+    after_topology routerd-local@.service
+    install_local_app
     # DNS внутренней зоны corp.example (для dns_override.txt) на 203.0.113.53.
     unit lab-dns-corp inet "/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/dev/null --pid-file= --log-facility=- \
 --listen-address=203.0.113.53 --bind-interfaces --no-resolv --log-queries --address=/corp.example/203.0.113.10"
@@ -658,6 +673,19 @@ cmd_install() {
     # Клиент получает адрес по DHCP от routerd.
     dhcp_client client >/dev/null || die "клиент не получил адрес по DHCP"
     log_info "Клиент получил по DHCP $(client_ip)"
+    # Сеть локального сервиса — заново (новый бинарник, конфиг); сервис — следом (Requires).
+    systemctl restart routerd-local@lab-app.service lab-local-app.service
+}
+
+# Локальный сервис стенда — юнит из документированного примера
+# deploy/systemd/local-app.service (имя app → lab-app, вместо программы — sleep).
+LOCAL_APP=lab-app
+install_local_app() {
+    sed -e "s/@app\./@${LOCAL_APP}./g" -e "s|/netns/app|/netns/${LOCAL_APP}|g" \
+        -e "s|^ExecStart=.*|ExecStart=/bin/sleep infinity|" \
+        "${REPO_DIR}/deploy/systemd/local-app.service" >"${UNIT_DIR}/lab-local-app.service"
+    systemctl daemon-reload
+    systemctl enable lab-local-app.service >/dev/null 2>&1
 }
 
 #===============================================================================
@@ -987,6 +1015,12 @@ cmd_test() {
     expect "open: vpn.example снова через туннель" eq "$(seen_by lab-web-vpn)" 198.51.100.6
     cmd_mode "${mode}" closed >/dev/null
     wait_for 10 web_ok vpn.example || true
+    # Быстрее интервала проверки routerd (2 с): в режиме route tun пересоздаётся
+    # с новым индексом, и маршрут в него должен вернуться.
+    systemctl restart gost-run
+    expect "быстрый перезапуск клиента туннеля: туннель снова работает" wait_for 15 web_ok vpn.example
+    fetch vpn.example
+    expect "  … и vpn.example снова через туннель" eq "$(seen_by lab-web-vpn)" 198.51.100.6
 
     log_info "Удалённые узлы туннеля"
     expect "www.exit.example — веб-сайт узла" eq "$(https_get exit www)" www-exit
@@ -1170,6 +1204,131 @@ cmd_test_no_tunnel() {
 }
 
 #===============================================================================
+# test-local-client: сервис на самой RPi как клиент LAN (LOCAL_CLIENTS)
+#===============================================================================
+# Запросы — из namespace сервиса lab-app (ip netns exec подставляет его
+# resolv.conf, как BindReadOnlyPaths в юните сервиса).
+app_web_ok() { nsx app curl -fsS --max-time 3 "http://$1/" >/dev/null 2>&1; }
+app_fetch() { nsx app curl -fsS --max-time 5 "http://$1/" >/dev/null 2>&1 || true; }
+app_udp_seen() {
+    nsx app dig +short +time=2 +tries=1 udp.example @203.0.113.20 >/dev/null 2>&1 || true
+    journalctl -u lab-dns-vpn -n 5 --no-pager -o cat | grep 'query\[A\] udp.example' | tail -1 | grep -oE '[0-9]+(\.[0-9]+){3}$'
+}
+# ICMP port unreachable от RPi (10.99.0.1) на UDP/443 — так QUIC-отказ видит сервис.
+app_quic_refused() {
+    local cap
+    cap="$(mktemp)"
+    nsx app timeout 4 tcpdump -i eth0 -n -c 1 "icmp[0] = 3 and icmp[1] = 3 and src host 10.99.0.1" >"${cap}" 2>/dev/null &
+    sleep 0.5
+    nsx app dig +tries=1 +time=1 -p 443 "@$1" x >/dev/null 2>&1 || true
+    wait
+    grep -q "udp port 443 unreachable" "${cap}"
+    local rc=$?
+    rm -f "${cap}"
+    return ${rc}
+}
+app_icmp_via_exit() {
+    local cap
+    cap="$(mktemp)"
+    nsx inet timeout 4 tcpdump -i x0 -n -c 1 "icmp[0] = 8 and dst host 203.0.113.20" >"${cap}" 2>/dev/null &
+    sleep 0.5
+    nsx app ping -c 2 -W 1 203.0.113.20 >/dev/null 2>&1 || true
+    wait
+    grep -q "ICMP echo request" "${cap}"
+    local rc=$?
+    rm -f "${cap}"
+    return ${rc}
+}
+# Запрос из юнита в том виде, как в deploy/systemd/local-app.service.
+app_unit_get() {
+    systemd-run --wait --pipe --quiet --collect \
+        -p "Requires=routerd-local@${LOCAL_APP}.service" -p "After=routerd-local@${LOCAL_APP}.service" \
+        -p "NetworkNamespacePath=/run/netns/${LOCAL_APP}" \
+        -p "BindReadOnlyPaths=/etc/netns/${LOCAL_APP}/resolv.conf:/etc/resolv.conf" \
+        curl -fsS --max-time 5 "http://$1/" 2>/dev/null
+}
+app_net_up() {
+    [[ -e "/run/netns/${LOCAL_APP}" ]] &&
+        nsx rpi ip -br addr show "rc-${LOCAL_APP}" | grep -q '10.99.0.1/30' &&
+        nsx app ip -br addr show eth0 | grep -q '10.99.0.2/30'
+}
+
+cmd_test_local_client() {
+    need_root
+    local mode failed=() pid bad
+    for mode in redirect tproxy route; do
+        fails=0
+        cmd_mode "${mode}" closed >/dev/null
+        log_info "Режим ${mode}: локальный сервис ${LOCAL_APP}"
+        expect "сеть сервиса поднята (routerd-local@${LOCAL_APP})" systemctl is-active --quiet "routerd-local@${LOCAL_APP}"
+        expect "сервис из примера юнита работает" systemctl is-active --quiet lab-local-app
+        expect "namespace, rc-${LOCAL_APP} 10.99.0.1/30 ↔ eth0 10.99.0.2/30" app_net_up
+        expect "resolv.conf сервиса — DNS routerd" grep -qx "nameserver 192.168.3.2" "/etc/netns/${LOCAL_APP}/resolv.conf"
+        wait_for 10 app_web_ok vpn.example || true
+
+        # Пустой vpn_dynamic: при остановке routerd убирает таблицу, при запуске
+        # создаёт заново (просто очистить set нельзя — routerd помнит выученное).
+        systemctl restart routerd
+        wait_for 30 status_has "работает" || true
+        expect "vpn_dynamic пуст" not set_has vpn_dynamic 203.0.113.20
+        expect "DNS из сервиса — через routerd: vpn.example" eq "$(nsx app dig +short +time=2 +tries=1 vpn.example)" 203.0.113.20
+        expect "адрес vpn.example из запроса сервиса попал в vpn_dynamic" set_has vpn_dynamic 203.0.113.20
+        app_fetch vpn.example
+        expect "vpn.example: через туннель (198.51.100.6)" eq "$(seen_by lab-web-vpn)" 198.51.100.6
+        app_fetch direct.example
+        expect "direct.example: напрямую (198.51.100.2)" eq "$(seen_by lab-web-direct)" 198.51.100.2
+        expect "юнит в виде примера: DNS и туннель" eq "$(app_unit_get vpn.example)" vpn-site
+        expect "  … и запрос пришёл через туннель" eq "$(seen_by lab-web-vpn)" 198.51.100.6
+        case ${mode} in
+        redirect) expect "UDP к vpn.example — напрямую (redirect — только TCP)" eq "$(app_udp_seen)" 198.51.100.2 ;;
+        tproxy) expect "UDP к vpn.example — через туннель" eq "$(app_udp_seen)" 198.51.100.6 ;;
+        route)
+            expect "UDP к vpn.example — через туннель" eq "$(app_udp_seen)" 198.51.100.6
+            expect "ICMP к vpn.example — через туннель (L3)" app_icmp_via_exit
+            ;;
+        esac
+        expect "QUIC к vpn.example отклоняется" app_quic_refused 203.0.113.20
+        expect "QUIC к direct.example не отклоняется" not app_quic_refused 203.0.113.10
+
+        systemctl stop gost-run
+        expect "туннель упал (closed): vpn.example недоступен" wait_for 6 not app_web_ok vpn.example
+        expect "  … direct.example работает" app_web_ok direct.example
+        systemctl start gost-run
+        expect "туннель вернулся: vpn.example снова доступен" wait_for 15 app_web_ok vpn.example
+
+        pid="$(systemctl show -P MainPID lab-local-app)"
+        systemctl restart routerd
+        expect "перезапуск routerd не трогает сеть сервиса" app_net_up
+        expect "  … и сам сервис (тот же процесс)" eq "$(systemctl show -P MainPID lab-local-app)" "${pid}"
+        expect "  … туннель для сервиса работает" wait_for 15 app_web_ok vpn.example
+        [[ ${fails} -eq 0 ]] || failed+=("${mode}")
+    done
+    cmd_mode redirect closed >/dev/null
+
+    fails=0
+    log_info "Остановка и запуск сети сервиса"
+    systemctl stop "routerd-local@${LOCAL_APP}"
+    expect "сервис остановлен вместе с сетью (Requires)" not systemctl is-active --quiet lab-local-app
+    expect "namespace удалён" test ! -e "/run/netns/${LOCAL_APP}"
+    expect "veth удалён" not nsx rpi ip link show "rc-${LOCAL_APP}"
+    expect "resolv.conf удалён" test ! -e "/etc/netns/${LOCAL_APP}"
+    systemctl start lab-local-app
+    expect "запуск сервиса поднимает его сеть" app_net_up
+    expect "  … и туннель для сервиса работает" wait_for 15 app_web_ok vpn.example
+
+    log_info "check-config"
+    bad="$(mktemp)"
+    printf 'vpn.example\n10.0.0.0/8\n' >"${bad}"
+    expect "подсеть из списка поверх подсети сервиса — ошибка" \
+        not ctl check-config --router-conf "${CONFIG_DIR}/router.conf" --vpn-file "${bad}"
+    rm -f "${bad}"
+    expect "rsc status показывает сервис" bash -c "ROUTERD_CONFIG_DIR=${CONFIG_DIR} rsc status | grep -q 'routerd-local@${LOCAL_APP} — запущен'"
+    [[ ${fails} -eq 0 ]] || failed+=("остановка/запуск")
+    [[ ${#failed[@]} -eq 0 ]] || die "не пройдено: ${failed[*]}"
+    log_info "Локальный сервис: все режимы пройдены."
+}
+
+#===============================================================================
 # boot-up (из lab-topology.service) и test-boot: стенд после перезагрузки
 #===============================================================================
 cmd_boot_up() {
@@ -1199,6 +1358,9 @@ cmd_test_boot() {
     wait_for 60 pihole_ready || true
     expect "DNS через Pi-hole работает" wait_for 30 resolves_to client vpn.example 203.0.113.20
     expect "туннель работает" wait_for 30 web_ok vpn.example
+    expect "локальный сервис и его сеть подняты при загрузке" \
+        bash -c "systemctl is-active --quiet lab-local-app && systemctl is-active --quiet routerd-local@${LOCAL_APP}"
+    expect "туннель для локального сервиса работает" wait_for 30 app_web_ok vpn.example
 
     log_info "После аварийного завершения (SIGKILL)"
     for u in routerd pihole-FTL gost-run; do
@@ -1320,6 +1482,7 @@ test-install) cmd_test_install ;;
 test-ansible) cmd_test_ansible ;;
 test-boot) cmd_test_boot ;;
 test-no-tunnel) cmd_test_no_tunnel ;;
+test-local-client) cmd_test_local_client ;;
 boot-up) cmd_boot_up ;;
 test-idle)
     shift

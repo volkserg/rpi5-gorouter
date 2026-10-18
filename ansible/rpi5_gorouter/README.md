@@ -81,7 +81,8 @@ ansible-playbook -i inventory.yml site.yml
    Конфиг dnscrypt-proxy не трогает.
 3. Скачивает архив routerd из релиза GitHub с проверкой sha256 (`SHA256SUMS`
    релиза) или берёт `routerd_archive` с машины Ansible; ставит бинарник,
-   `rsc` и `router_service_ctl`, `routerd.service`, автодополнение bash/zsh.
+   `rsc` и `router_service_ctl`, `routerd.service`, шаблон
+   `routerd-local@.service` (`LOCAL_CLIENTS`), автодополнение bash/zsh.
 4. Пишет `router.conf` из `routerd_conf` и, если заданы, списки
    `vpn_domains.txt` и `dns_override.txt` (из файлов или записей). Каждый файл
    проверяется до записи (`rsc check-config --vpn-file …`): с ошибкой он на RPi

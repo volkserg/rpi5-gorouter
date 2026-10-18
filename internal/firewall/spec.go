@@ -60,6 +60,26 @@ type Spec struct {
 	// Bypass — перехват снят: туннель недоступен при VPN_FAILOVER=open,
 	// трафик к адресам из списков идёт напрямую. Set'ы и NAT остаются.
 	Bypass bool
+
+	// Locals — локальные сервисы RPi: их трафик приходит с veth и
+	// обрабатывается так же, как трафик LAN.
+	Locals []Local
+}
+
+// Local — veth локального сервиса на стороне RPi и подсеть veth-пары.
+type Local struct {
+	Iface string
+	Net   netip.Prefix
+}
+
+// inIfaces — интерфейсы, трафик с которых идёт через правила: LAN и veth
+// локальных сервисов.
+func (s Spec) inIfaces() []string {
+	ifs := []string{s.Iface}
+	for _, l := range s.Locals {
+		ifs = append(ifs, l.Iface)
+	}
+	return ifs
 }
 
 // Validate проверяет Spec до обращения к ядру.
@@ -82,6 +102,14 @@ func (s Spec) Validate() error {
 		}
 	default:
 		errs = append(errs, fmt.Errorf("неизвестный режим %q", s.Mode))
+	}
+	for _, l := range s.Locals {
+		if l.Iface == "" || len(l.Iface) > 15 {
+			errs = append(errs, fmt.Errorf("недопустимое имя интерфейса локального сервиса %q", l.Iface))
+		}
+		if !l.Net.IsValid() || !l.Net.Addr().Is4() {
+			errs = append(errs, fmt.Errorf("недопустимая подсеть локального сервиса %v", l.Net))
+		}
 	}
 	if s.DynamicTimeout < time.Second {
 		errs = append(errs, fmt.Errorf("слишком короткий таймаут vpn_dynamic: %v", s.DynamicTimeout))
