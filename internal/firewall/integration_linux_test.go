@@ -284,3 +284,22 @@ func TestLocals(t *testing.T) {
 		}
 	}
 }
+
+// Forget убирает адреса; отсутствующий в set адрес (истёк сам) не мешает
+// убрать остальные, а снова выученный адрес добавляется заново.
+func TestDynamicForget(t *testing.T) {
+	c, run := testNS(t)
+	if _, err := Apply(c, spec()); err != nil {
+		t.Fatal(err)
+	}
+	d := newDynamic(c, 30*time.Second, nil)
+	a, b := netip.MustParseAddr("203.0.113.20"), netip.MustParseAddr("203.0.113.21")
+	d.Learn([]netip.Addr{a, b}, time.Minute)
+	d.Forget([]netip.Addr{a, netip.MustParseAddr("203.0.113.99")})
+	out := run("nft", "list", "set", "ip", TableName, SetDynamic)
+	if strings.Contains(out, "203.0.113.20") || !strings.Contains(out, "203.0.113.21") {
+		t.Errorf("после Forget:\n%s", out)
+	}
+	d.Learn([]netip.Addr{a}, time.Minute)
+	mustContain(t, run("nft", "list", "set", "ip", TableName, SetDynamic), "203.0.113.20 timeout 1m")
+}

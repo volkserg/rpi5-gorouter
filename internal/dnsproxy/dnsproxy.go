@@ -23,9 +23,11 @@ import (
 )
 
 // SetUpdater принимает адреса, узнанные из ответов на запросы доменов из
-// списка; ttl — минимальный TTL A-записей ответа.
+// списка (ttl — минимальный TTL A-записей ответа), и убирает адреса доменов,
+// удалённых из списка.
 type SetUpdater interface {
 	Learn(addrs []netip.Addr, ttl time.Duration)
+	Forget(addrs []netip.Addr)
 }
 
 // LocalZone — локальная зона LAN (имена клиентов из DHCP-аренд).
@@ -86,6 +88,9 @@ type Server struct {
 	tcp     *dns.Client
 	mu      sync.Mutex
 	servers []*dns.Server
+	// recent — недавние ответы: по ним смена списка применяется к адресам,
+	// которые клиенты уже держат в своих DNS-кэшах.
+	recent *recent
 }
 
 // New создаёт сервер; слушатели открывает Start.
@@ -100,16 +105,19 @@ func New(o Options) *Server {
 		o.Log = slog.New(slog.DiscardHandler)
 	}
 	s := &Server{
-		opts: o,
-		sem:  make(chan struct{}, o.MaxInflight),
-		udp:  &dns.Client{Net: "udp", Timeout: o.UpstreamTimeout, UDPSize: dns.DefaultMsgSize},
-		tcp:  &dns.Client{Net: "tcp", Timeout: o.UpstreamTimeout},
+		opts:   o,
+		sem:    make(chan struct{}, o.MaxInflight),
+		udp:    &dns.Client{Net: "udp", Timeout: o.UpstreamTimeout, UDPSize: dns.DefaultMsgSize},
+		tcp:    &dns.Client{Net: "tcp", Timeout: o.UpstreamTimeout},
+		recent: newRecent(defaultRecentMax),
 	}
 	s.SetRules(o.Rules)
 	return s
 }
 
-// SetRules атомарно заменяет правила (на SIGHUP).
+// SetRules атомарно заменяет правила (на SIGHUP). Адреса из недавних
+// ответов для доменов, добавленных в список, сразу попадают в vpn_dynamic,
+// а для удалённых — убираются: не нужно ждать, пока клиенты заново спросят DNS.
 func (s *Server) SetRules(r Rules) {
 	if r.Overrides == nil {
 		r.Overrides = domain.NewMatcher[[]netip.AddrPort]()
@@ -117,7 +125,36 @@ func (s *Server) SetRules(r Rules) {
 	if r.VPN == nil {
 		r.VPN = domain.NewMatcher[struct{}]()
 	}
-	s.rules.Store(&r)
+	old := s.rules.Swap(&r)
+	if old == nil || s.opts.Sets == nil {
+		return
+	}
+	learn, forget := s.recent.diff(old.VPN, r.VPN)
+	s.learn(learn)
+	if len(forget) > 0 {
+		s.opts.Sets.Forget(forget)
+	}
+	if len(learn) > 0 || len(forget) > 0 {
+		s.opts.Log.Info("список применён к недавним DNS-ответам",
+			"имён добавлено", len(learn), "адресов убрано", len(forget))
+	}
+}
+
+// Relearn заново добавляет в vpn_dynamic адреса из недавних ответов для
+// доменов из списка — после пересоздания таблицы nftables (set пуст).
+func (s *Server) Relearn() {
+	if s.opts.Sets != nil {
+		s.learn(s.recent.matching(s.rules.Load().VPN))
+	}
+}
+
+func (s *Server) learn(es []recentEntry) {
+	now := s.recent.now()
+	for _, e := range es {
+		if ttl := e.expires.Sub(now); ttl > 0 {
+			s.opts.Sets.Learn(e.addrs, ttl)
+		}
+	}
 }
 
 // Start открывает UDP- и TCP-слушатели на всех адресах Listen. Ошибка
@@ -220,9 +257,12 @@ func (s *Server) handle(w dns.ResponseWriter, req *dns.Msg) *dns.Msg {
 	}
 	resp := s.forwardAndFix(req, upstreams, udp, ecsClient)
 
-	if isVPN && resp.Rcode == dns.RcodeSuccess && s.opts.Sets != nil {
+	if resp.Rcode == dns.RcodeSuccess {
 		if addrs, ttl := aRecords(resp); len(addrs) > 0 {
-			s.opts.Sets.Learn(addrs, ttl)
+			s.recent.add(domain.Normalize(q.Name), addrs, ttl)
+			if isVPN && s.opts.Sets != nil {
+				s.opts.Sets.Learn(addrs, ttl)
+			}
 		}
 	}
 	return resp

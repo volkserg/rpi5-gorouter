@@ -100,6 +100,34 @@ func (d *Dynamic) Learn(addrs []netip.Addr, ttl time.Duration) {
 	d.prune(now)
 }
 
+// Forget убирает адреса из vpn_dynamic (домен удалён из списка).
+func (d *Dynamic) Forget(addrs []netip.Addr) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	var els []nftables.SetElement
+	for _, a := range addrs {
+		if a.Is4() {
+			els = append(els, nftables.SetElement{Key: a.AsSlice(), Timeout: time.Second})
+		}
+	}
+	if len(els) == 0 {
+		return
+	}
+	set := &nftables.Set{Table: table(), Name: SetDynamic, KeyType: nftables.TypeIPAddr, HasTimeout: true}
+	// Добавить и удалить одной транзакцией: удаление отсутствующего адреса
+	// (истёк сам) иначе отменило бы всю транзакцию.
+	_ = d.conn.SetAddElements(set, els)
+	_ = d.conn.SetDeleteElements(set, els)
+	if err := d.conn.Flush(); err != nil {
+		d.log.Warn("не удалось убрать адреса из vpn_dynamic", "ошибка", err)
+		return
+	}
+	for _, a := range addrs {
+		delete(d.expires, a)
+	}
+}
+
 // prune убирает из памяти давно истёкшие адреса (ядро удалило их само).
 func (d *Dynamic) prune(now time.Time) {
 	if len(d.expires) < 1024 {

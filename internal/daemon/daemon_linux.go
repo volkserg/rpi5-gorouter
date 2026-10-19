@@ -364,6 +364,10 @@ func (d *daemon) syncDNS(cfg *config.Config, entries []lists.Entry, overrides []
 	}
 	if d.dns != nil && slices.Equal(listen, d.listen) {
 		d.dns.SetRules(rules)
+		if recreated {
+			// vpn_dynamic пересоздан пустым — вернуть адреса из недавних ответов.
+			d.dns.Relearn()
+		}
 		return nil
 	}
 	if d.dns != nil {

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -100,14 +102,21 @@ type learned struct {
 }
 
 type fakeSets struct {
-	mu  sync.Mutex
-	got []learned
+	mu     sync.Mutex
+	got    []learned
+	forgot []netip.Addr
 }
 
 func (f *fakeSets) Learn(addrs []netip.Addr, ttl time.Duration) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.got = append(f.got, learned{addrs, ttl})
+}
+
+func (f *fakeSets) Forget(addrs []netip.Addr) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.forgot = append(f.forgot, addrs...)
 }
 
 // writer — поддельный ResponseWriter с адресом клиента.
@@ -444,5 +453,80 @@ func TestLocalZone(t *testing.T) {
 	p.handle(writer{remote: lanUDP}, query("direct.example", dns.TypeA, false))
 	if n := len(up.requests()); n != 1 {
 		t.Errorf("обычный домен должен уйти в upstream: %d", n)
+	}
+}
+
+// Смена списка применяется к адресам, которые клиенты уже узнали из DNS:
+// добавленный домен — сразу в vpn_dynamic, удалённый — убирается оттуда,
+// но адрес, нужный оставшемуся в списке имени, остаётся.
+func TestRulesChangeAppliesToRecentAnswers(t *testing.T) {
+	up := startUpstream(t, func(req *dns.Msg, _ string) *dns.Msg {
+		ip := map[string]string{
+			"app.corp.test.": "203.0.113.30", "corp.test.": "203.0.113.31",
+			"shared.vpn.test.": "203.0.113.40", "shared.corp.test.": "203.0.113.40",
+		}[strings.ToLower(req.Question[0].Name)]
+		return answerA([]uint32{120}, ip)(req, "")
+	})
+	sets := &fakeSets{}
+	p := newProxy(up, sets, nil)
+	for _, name := range []string{"app.corp.test", "corp.test", "shared.vpn.test", "shared.corp.test"} {
+		p.handle(writer{remote: lanUDP}, query(name, dns.TypeA, false))
+	}
+	sets.got = nil // shared.vpn.test выучен при запросе — не интересует
+
+	// corp.test добавлен в список: адреса уже известных имён — сразу.
+	p.SetRules(Rules{Upstream: up.addr, VPN: matcher(struct{}{}, "vpn.test", "corp.test")})
+	var got []string
+	for _, l := range sets.got {
+		if l.ttl <= 0 || l.ttl > 120*time.Second {
+			t.Errorf("ttl %v: ожидался оставшийся TTL ответа", l.ttl)
+		}
+		for _, a := range l.addrs {
+			got = append(got, a.String())
+		}
+	}
+	slices.Sort(got)
+	if strings.Join(got, " ") != "203.0.113.30 203.0.113.31 203.0.113.40" {
+		t.Errorf("выучено при добавлении: %v", got)
+	}
+
+	// corp.test убран: его адреса уходят, общий с vpn.test — остаётся.
+	p.SetRules(Rules{Upstream: up.addr, VPN: matcher(struct{}{}, "vpn.test")})
+	var forgot []string
+	for _, a := range sets.forgot {
+		forgot = append(forgot, a.String())
+	}
+	slices.Sort(forgot)
+	if strings.Join(forgot, " ") != "203.0.113.30 203.0.113.31" {
+		t.Errorf("убрано при удалении: %v (203.0.113.40 нужен shared.vpn.test)", forgot)
+	}
+
+	// После пересоздания таблицы — заново всё, что в списке.
+	sets.got = nil
+	p.Relearn()
+	if len(sets.got) != 1 || sets.got[0].addrs[0].String() != "203.0.113.40" {
+		t.Errorf("Relearn: %v", sets.got)
+	}
+}
+
+func TestRecentExpiresAndEvicts(t *testing.T) {
+	now := time.Unix(1000, 0)
+	r := newRecent(2)
+	r.now = func() time.Time { return now }
+	a := []netip.Addr{netip.MustParseAddr("203.0.113.1")}
+	vpn := matcher(struct{}{}, "test")
+	r.add("a.test", a, time.Minute)
+	r.add("b.test", a, time.Hour)
+	r.add("c.test", a, time.Hour) // места нет: вытесняется самая старая (a)
+	if _, ok := r.m["a.test"]; ok || len(r.m) != 2 {
+		t.Errorf("после вытеснения: %v", r.m)
+	}
+	now = now.Add(2 * time.Hour) // всё истекло
+	if got := r.matching(vpn); len(got) != 0 {
+		t.Errorf("истёкшие записи не должны применяться: %v", got)
+	}
+	learn, forget := r.diff(matcher(struct{}{}), vpn)
+	if len(learn) != 0 || len(forget) != 0 || len(r.m) != 0 {
+		t.Errorf("diff по истёкшим: %v %v, осталось %d", learn, forget, len(r.m))
 	}
 }

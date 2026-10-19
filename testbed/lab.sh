@@ -876,6 +876,19 @@ wait_for() {
     return 1
 }
 web_ok() { nsx client curl -fsS --max-time 3 "http://$1/" >/dev/null 2>&1; }
+# cached_ok <имя> <адрес> — запрос по адресу из DNS-кэша клиента, без нового DNS-запроса.
+cached_ok() { nsx client curl -fsS --max-time 3 --resolve "$1:80:$2" "http://$1/" >/dev/null 2>&1; }
+# direct_block on|off — «интернет» не пускает WAN роутера к direct.example
+# (сервис недоступен напрямую, но доступен с выходного узла туннеля).
+direct_block() {
+    if [[ $1 == on ]]; then
+        nsx inet nft add table ip lab_block
+        nsx inet nft add chain ip lab_block in '{ type filter hook prerouting priority -10; }'
+        nsx inet nft add rule ip lab_block in ip saddr 198.51.100.2 ip daddr 203.0.113.10 drop
+    else
+        nsx inet nft delete table ip lab_block 2>/dev/null || true
+    fi
+}
 status_has() { systemctl show routerd -p StatusText | grep -q "$1"; }
 
 cmd_test() {
@@ -931,8 +944,10 @@ cmd_test() {
     expect "адрес direct.example в set не попал" not set_has vpn_dynamic 203.0.113.10
     expect "corp.example (dns_override) отвечает свой DNS 203.0.113.53" eq "$(resolve client corp.example 192.168.3.2)" 203.0.113.10
     expect "DNS слушается и на loopback RPi (для GOST)" eq "$(resolve rpi vpn.example 127.0.0.1)" 203.0.113.20
-    # TTL 120 у источника; через кэш Pi-hole может прийти чуть меньше — но больше 30s.
-    expect "срок жизни адреса — max(TTL ≈120s, VPN_DYNAMIC_TIMEOUT 30s)" set_has vpn_dynamic "203.0.113.20 timeout [12]m"
+    # TTL 120 у источника; через кэш Pi-hole может прийти меньше (после перезапуска
+    # routerd выше — и заметно меньше), но срок — по TTL, больше нижней границы 30s.
+    expect "срок жизни адреса — max(TTL ≤120s, VPN_DYNAMIC_TIMEOUT 30s)" \
+        set_has vpn_dynamic "203.0.113.20 timeout \(2m\|1m\|[4-9][0-9]s\|3[1-9]s\)"
     expect "AAAA для vpn.example отфильтрован (FILTER_AAAA=vpn)" eq "$(resolve6 vpn.example)" ""
     expect "AAAA для direct.example проходит" eq "$(resolve6 direct.example)" 2001:db8::10
     expect "bogus-priv: PTR частной сети — NXDOMAIN без upstream" eq "$(rcode -x 192.168.3.77)" NXDOMAIN
@@ -998,6 +1013,22 @@ cmd_test() {
     fetch direct.example
     expect "remove-vpn-ip: снова напрямую" eq "$(seen_by lab-web-direct)" 198.51.100.2
     expect "после reload адрес из DNS в vpn_dynamic сохранился" set_has vpn_dynamic 203.0.113.20
+
+    log_info "Смена списка без нового DNS-запроса клиента"
+    # Клиент узнал адрес раньше и держит его в своём кэше: routerd применяет
+    # изменение списка к недавним DNS-ответам сам, сразу.
+    direct_block on
+    resolve client direct.example 192.168.3.2 >/dev/null
+    expect "direct.example недоступен напрямую (таймаут)" not cached_ok direct.example 203.0.113.10
+    ctl add-vpn-domain direct.example >/dev/null
+    expect "add-vpn-domain: адрес из недавнего ответа сразу в vpn_dynamic" set_has vpn_dynamic 203.0.113.10
+    expect "  … и доступен по адресу из кэша клиента — через туннель" cached_ok direct.example 203.0.113.10
+    expect "  … запрос пришёл с выходного узла" eq "$(seen_by lab-web-direct)" 198.51.100.6
+    ctl remove-vpn-domain direct.example >/dev/null
+    expect "remove-vpn-domain: адрес сразу убран из vpn_dynamic" not set_has vpn_dynamic 203.0.113.10
+    expect "  … и снова идёт напрямую (недоступен)" not cached_ok direct.example 203.0.113.10
+    expect "адрес vpn.example (в списке) не тронут" set_has vpn_dynamic 203.0.113.20
+    direct_block off
 
     log_info "VPN_FAILOVER"
     systemctl stop gost-run
