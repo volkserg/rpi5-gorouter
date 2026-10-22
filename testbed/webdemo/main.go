@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/volkserg/rpi5-gorouter/internal/api"
+	"github.com/volkserg/rpi5-gorouter/internal/lists"
 	"github.com/volkserg/rpi5-gorouter/internal/web"
 )
 
@@ -31,8 +32,31 @@ const (
 	demoPassword = "demo-password"
 )
 
+// Примерные списки демо (каталог конфигов создаётся заново при каждом запуске).
+const (
+	demoVPN = `# Внутренние ресурсы компании
+corp.example.com
+intranet.example.com
+git.example.com
+wiki.example.org
+jira.example.org
+# Подсети офиса и площадки
+10.20.0.0/16
+172.16.40.0/24
+192.0.2.15
+`
+	demoOverrides = `# Внутренний DNS компании
+corp.example.com 10.20.0.53
+corp.example.com 10.20.0.54
+intranet.example.com 10.20.0.53#5353
+`
+	demoConf = `LOCAL_CLIENTS="app:10.99.0.0/30"
+`
+)
+
 type fake struct {
 	mu      sync.Mutex
+	dir     string
 	started time.Time
 	phase   int
 }
@@ -42,8 +66,20 @@ func (f *fake) Status() api.Status {
 	defer f.mu.Unlock()
 	st := api.Status{
 		Version: "demo", StartedAt: f.started, Mode: "tproxy", Failover: "closed",
-		TunnelUp: true, Domains: 214, Nets: 37, Overrides: 3, LocalClients: 2, DHCP: true,
+		TunnelUp: true, LocalClients: 1, DHCP: true,
 		RPiIP: "192.168.3.2", LAN: "192.168.3.0/24",
+	}
+	if l, _, err := lists.ReadVPN(filepath.Join(f.dir, lists.VPNFileName)); err == nil {
+		for _, e := range l.Entries() {
+			if e.Kind == lists.KindDomain {
+				st.Domains++
+			} else {
+				st.Nets++
+			}
+		}
+	}
+	if o, _, err := lists.ReadOverrides(filepath.Join(f.dir, lists.OverrideFileName)); err == nil {
+		st.Overrides = len(o)
 	}
 	switch f.phase % 3 {
 	case 1:
@@ -51,8 +87,14 @@ func (f *fake) Status() api.Status {
 	case 2:
 		st.TunnelUp, st.Failover, st.Bypass = false, "open", true
 	}
-	st.Domains += f.phase % 4
 	return st
+}
+
+// Apply — как у демона: короткая пауза на «применение».
+func (f *fake) Apply(user, what string) error {
+	slog.Info("применено", "пользователь", user, "изменение", what)
+	time.Sleep(300 * time.Millisecond)
+	return nil
 }
 
 func main() {
@@ -83,14 +125,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	f := &fake{started: time.Now().Add(-26 * time.Hour)}
+	for name, text := range map[string]string{lists.VPNFileName: demoVPN, lists.OverrideFileName: demoOverrides, "router.conf": demoConf} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, "webdemo:", err)
+			os.Exit(1)
+		}
+	}
+	f := &fake{dir: dir, started: time.Now().Add(-26 * time.Hour)}
 	sock := filepath.Join(dir, "api.sock")
 	l, err := api.Listen(sock)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "webdemo: сокет API:", err)
 		os.Exit(1)
 	}
-	go http.Serve(l, api.Handler(f))
+	go http.Serve(l, api.Handler(f, dir))
 	go func() {
 		for range time.Tick(*period) {
 			f.mu.Lock()

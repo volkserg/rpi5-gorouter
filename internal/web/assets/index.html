@@ -24,6 +24,8 @@
     </div>
     <nav class="tabs" id="tabs" aria-label="Разделы">
       <a class="tab" href="#overview" data-view="overview">Обзор</a>
+      <a class="tab" href="#vpn" data-view="vpn">Список VPN</a>
+      <a class="tab" href="#dns" data-view="dns">DNS override</a>
     </nav>
     <div class="who">
       <span class="who-name" id="user"></span>
@@ -114,6 +116,107 @@
           <dt>routerd работает</dt><dd data-bind="uptime">—</dd>
           <dt>Версия</dt><dd class="mono" data-bind="version">—</dd>
         </dl>
+      </div>
+    </section>
+
+    <section class="view" id="view-vpn" data-view="vpn" hidden>
+      <div class="card reveal">
+        <div class="card-head">
+          <h2>Список VPN</h2>
+          <div class="head-actions">
+            <span class="pill" id="vpn-counts"><span>…</span></span>
+            <a class="btn ghost small" href="/api/v1/vpn/file" download>Скачать файл</a>
+          </div>
+        </div>
+        <p class="hint">Трафик к доменам, IP-адресам и подсетям из списка идёт через туннель.
+          Домен действует вместе с поддоменами. Изменения применяются сразу.</p>
+
+        <form class="add-row" id="vpn-add" autocomplete="off" novalidate>
+          <label class="field grow">
+            <input name="value" placeholder=" " spellcheck="false" autocapitalize="none" required>
+            <span>Домен, IP-адрес или подсеть</span>
+          </label>
+          <button class="btn" type="submit">Добавить</button>
+        </form>
+        <p class="kind-hint" id="vpn-kind" aria-live="polite"></p>
+
+        <div class="list-tools">
+          <label class="search">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="6"/><path d="M14 14 L18 18"/></svg>
+            <input type="search" id="vpn-search" placeholder="Поиск" spellcheck="false" autocapitalize="none">
+          </label>
+          <div class="segmented" id="vpn-filter" role="radiogroup" aria-label="Тип записей">
+            <button type="button" role="radio" aria-checked="true" data-kind="">Все</button>
+            <button type="button" role="radio" aria-checked="false" data-kind="domain">Домены</button>
+            <button type="button" role="radio" aria-checked="false" data-kind="net">IP и подсети</button>
+          </div>
+        </div>
+
+        <ul class="entries" id="vpn-entries" aria-live="polite"></ul>
+        <p class="list-foot" id="vpn-foot"></p>
+      </div>
+
+      <div class="card warn-card reveal" id="vpn-invalid-card" hidden>
+        <div class="card-head"><h2>Строки с ошибками</h2></div>
+        <p class="hint">Эти строки файла не применяются. Исправьте файл и загрузите его заново.</p>
+        <ul class="bad-lines" id="vpn-invalid"></ul>
+      </div>
+
+      <div class="card reveal">
+        <div class="card-head"><h2>Импорт файла</h2></div>
+        <div class="segmented" id="import-mode" role="radiogroup" aria-label="Режим импорта">
+          <button type="button" role="radio" aria-checked="true" data-mode="merge">Добавить к текущему</button>
+          <button type="button" role="radio" aria-checked="false" data-mode="replace">Заменить список</button>
+        </div>
+        <p class="hint" id="import-mode-hint"></p>
+        <label class="dropzone" id="dropzone">
+          <input type="file" id="import-file" accept=".txt,text/plain">
+          <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M24 31 V11 M16 19 L24 11 L32 19"/><path d="M10 29 V35 a4 4 0 0 0 4 4 H34 a4 4 0 0 0 4 -4 V29"/></svg>
+          <span class="dz-title">Перетащите файл сюда или нажмите, чтобы выбрать</span>
+          <span class="dz-sub">Формат vpn_domains.txt: запись на строке, # — комментарий</span>
+        </label>
+        <div class="import-preview" id="import-preview" hidden>
+          <div class="diff-summary" id="import-summary"></div>
+          <div class="diff-cols">
+            <div class="diff-col add" id="import-added-col"><h3>Будут добавлены</h3><ul id="import-added"></ul></div>
+            <div class="diff-col del" id="import-removed-col"><h3>Будут удалены</h3><ul id="import-removed"></ul></div>
+          </div>
+          <ul class="bad-lines" id="import-bad"></ul>
+          <div class="actions">
+            <button class="btn" type="button" id="import-apply">Применить</button>
+            <button class="btn ghost" type="button" id="import-cancel">Отмена</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" id="view-dns" data-view="dns" hidden>
+      <div class="card reveal">
+        <div class="card-head">
+          <h2>DNS override</h2>
+          <div class="head-actions">
+            <span class="dirty" id="dns-dirty" hidden>не сохранено</span>
+            <a class="btn ghost small" href="/api/v1/overrides/file" download>Скачать файл</a>
+          </div>
+        </div>
+        <p class="hint">Домены (с поддоменами), которые резолвит указанный DNS-сервер, например внутренний
+          DNS компании. Формат: <code>домен сервер[:порт]</code>; несколько строк с одним доменом — несколько серверов.</p>
+        <div class="editor">
+          <pre class="gutter" id="dns-gutter" aria-hidden="true"></pre>
+          <textarea id="dns-text" spellcheck="false" autocapitalize="none" wrap="off" aria-label="dns_override.txt"></textarea>
+        </div>
+        <ul class="bad-lines" id="dns-bad"></ul>
+        <div class="actions">
+          <button class="btn" type="button" id="dns-save" disabled>Сохранить</button>
+          <button class="btn ghost" type="button" id="dns-check">Проверить</button>
+          <button class="btn ghost" type="button" id="dns-revert" disabled>Отменить правки</button>
+          <span class="muted small-text">⌘S / Ctrl+S — сохранить</span>
+        </div>
+      </div>
+
+      <div class="card reveal">
+        <div class="card-head"><h2>Действующие правила</h2></div>
+        <div class="rules" id="dns-rules"></div>
       </div>
     </section>
   </main>

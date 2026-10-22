@@ -904,6 +904,10 @@ cert_has_rpi_ip() {
         openssl x509 -noout -ext subjectAltName | grep -q 'IP Address:192.168.3.2'
 }
 eq_ui_status() { [[ "$(ui /dev/null "${WEB_URL}/api/v1/status")" == "$1" ]]; }
+# ui_json <файл ответа> <метод> <путь> <JSON>; ui_text — тело текстом; ui_file <файл ответа> <параметры импорта> <файл>.
+ui_json() { ui "$1" -X "$2" -H 'X-Routerd-CSRF: 1' -H 'Content-Type: application/json' --data "$4" "${WEB_URL}$3"; }
+ui_text() { ui "$1" -X "$2" -H 'X-Routerd-CSRF: 1' -H 'Content-Type: text/plain' --data-binary "$4" "${WEB_URL}$3"; }
+ui_file() { ui "$1" -X POST -H 'X-Routerd-CSRF: 1' -H 'Content-Type: text/plain' --data-binary "@$3" "${WEB_URL}/api/v1/vpn/import?mode=$2"; }
 # cached_ok <имя> <адрес> — запрос по адресу из DNS-кэша клиента, без нового DNS-запроса.
 cached_ok() { nsx client curl -fsS --max-time 3 --resolve "$1:80:$2" "http://$1/" >/dev/null 2>&1; }
 # direct_block on|off — «интернет» не пускает WAN роутера к direct.example
@@ -1561,6 +1565,47 @@ cmd_test_web() {
     expect "  … режим $(conf_get VPN_MODE), туннель доступен" \
         grep -q "\"mode\":\"$(conf_get VPN_MODE)\".*\"tunnel_up\":true" "${tmp}/status"
     expect "изменяющий запрос без CSRF — 403" eq "$(ui /dev/null -X POST "${WEB_URL}/api/v1/status")" 403
+
+    log_info "Список VPN через веб-интерфейс"
+    local vpn_before since
+    vpn_before="$(cat "${CONFIG_DIR}/vpn_domains.txt")"
+    since="$(date +%s)"
+    expect "добавление direct.example" eq "$(ui_json "${tmp}/r" POST /api/v1/vpn '{"value":"Direct.Example"}')" 200
+    expect "  … записан в файл в нормальной форме" grep -qx 'direct.example' "${CONFIG_DIR}/vpn_domains.txt"
+    resolve client direct.example 192.168.3.2 >/dev/null
+    fetch direct.example
+    expect "  … и сразу идёт через туннель" eq "$(seen_by lab-web-direct)" 198.51.100.6
+    expect "  … в журнале routerd — кто изменил" bash -c "journalctl -u routerd --since @${since} -o cat | grep -q 'пользователь=${LAB_WEB_USER}.*direct.example'"
+    expect "некорректная запись — 400" eq "$(ui_json "${tmp}/r" POST /api/v1/vpn '{"value":"999.1.1.1"}')" 400
+    expect "удаление direct.example" eq "$(ui /dev/null -X DELETE -H 'X-Routerd-CSRF: 1' "${WEB_URL}/api/v1/vpn?value=direct.example")" 200
+    expect "  … убран из файла" not grep -qx 'direct.example' "${CONFIG_DIR}/vpn_domains.txt"
+    fetch direct.example
+    expect "  … и снова идёт напрямую" eq "$(seen_by lab-web-direct)" 198.51.100.2
+    expect "экспорт — файл как есть" eq "$(ui "${tmp}/export" "${WEB_URL}/api/v1/vpn/file"; cat "${tmp}/export")" "200${vpn_before}"
+
+    printf 'direct.example\n172.31.0.0/16\nbad entry\n' >"${tmp}/import.txt"
+    expect "импорт: предпросмотр не меняет файл" eq "$(ui_file "${tmp}/r" "merge" "${tmp}/import.txt")" 200
+    expect "  … две новые записи и одна ошибка" grep -q '"added":\[{"value":"direct.example".*"172.31.0.0/16".*"invalid":\[{"line":3' "${tmp}/r"
+    expect "  … файл не изменён" eq "$(cat "${CONFIG_DIR}/vpn_domains.txt")" "${vpn_before}"
+    expect "импорт «добавить»: применён" eq "$(ui_file "${tmp}/r" "merge&apply=1" "${tmp}/import.txt")" 200
+    expect "  … 172.31.0.0/16 в vpn_static" set_has vpn_static 172.31.0.0/16
+    expect "импорт «заменить» с ошибками в файле — отказ" eq "$(ui_file "${tmp}/r" "replace&apply=1" "${tmp}/import.txt")" 422
+    printf '%s\n' "${vpn_before}" >"${tmp}/orig.txt"
+    expect "импорт «заменить»: прежний список восстановлен" eq "$(ui_file "${tmp}/r" "replace&apply=1" "${tmp}/orig.txt")" 200
+    expect "  … файл совпадает с загруженным" cmp -s "${tmp}/orig.txt" "${CONFIG_DIR}/vpn_domains.txt"
+    expect "  … 172.31.0.0/16 убран из vpn_static" not set_has vpn_static 172.31.0.0/16
+
+    log_info "dns_override через веб-интерфейс"
+    local ovr_before
+    ovr_before="$(cat "${CONFIG_DIR}/dns_override.txt")"
+    expect "файл с ошибкой — 422, не сохранён" eq "$(ui_text "${tmp}/r" PUT /api/v1/overrides 'broken line here')" 422
+    expect "  … файл не изменён" eq "$(cat "${CONFIG_DIR}/dns_override.txt")" "${ovr_before}"
+    printf '# правка из веб-интерфейса\n%s\n' "${ovr_before}" >"${tmp}/ovr.txt"
+    expect "сохранение" eq "$(ui_text "${tmp}/r" PUT /api/v1/overrides "$(cat "${tmp}/ovr.txt")")" 200
+    expect "  … файл записан" grep -q '^# правка из веб-интерфейса' "${CONFIG_DIR}/dns_override.txt"
+    expect "  … corp.example по-прежнему отвечает свой DNS" resolves_to client corp.example 203.0.113.10
+    printf '%s\n' "${ovr_before}" >"${CONFIG_DIR}/dns_override.txt"
+    ctl reload-vpn-domains >/dev/null
 
     log_info "routerd остановлен и снова запущен"
     systemctl stop routerd

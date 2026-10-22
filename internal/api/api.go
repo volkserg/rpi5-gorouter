@@ -16,6 +16,8 @@ import (
 	"os/user"
 	"strconv"
 	"time"
+
+	"github.com/volkserg/rpi5-gorouter/internal/lists"
 )
 
 const (
@@ -60,6 +62,9 @@ type Status struct {
 // Backend — то, что API берёт у демона.
 type Backend interface {
 	Status() Status
+	// Apply применяет изменённые списки (как reload-vpn-domains) и ждёт
+	// результата; user и what — для журнала.
+	Apply(user, what string) error
 }
 
 // Error — тело ответа с ошибкой.
@@ -67,12 +72,21 @@ type Error struct {
 	Error string `json:"error"`
 }
 
-// Handler — обработчик запросов API.
-func Handler(b Backend) http.Handler {
+// Handler — обработчик запросов API; configDir — каталог конфигов (списки).
+func Handler(b Backend, configDir string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusOK, b.Status())
 	})
+	l := &listsAPI{b: b, dir: configDir}
+	mux.HandleFunc("GET /v1/vpn", l.list)
+	mux.HandleFunc("POST /v1/vpn", l.add)
+	mux.HandleFunc("DELETE /v1/vpn", l.remove)
+	mux.HandleFunc("GET /v1/vpn/file", l.file(l.vpnPath(), lists.VPNFileName))
+	mux.HandleFunc("POST /v1/vpn/import", l.importVPN)
+	mux.HandleFunc("GET /v1/overrides", l.overrides)
+	mux.HandleFunc("PUT /v1/overrides", l.saveOverrides)
+	mux.HandleFunc("GET /v1/overrides/file", l.file(l.overridePath(), lists.OverrideFileName))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusNotFound, Error{"нет такого метода API: " + r.Method + " " + r.URL.Path})
 	})

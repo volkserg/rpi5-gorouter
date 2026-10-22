@@ -60,6 +60,17 @@ func UpdateVPN(path string, fn func(*VPNList) (changed bool, err error)) error {
 	return writeAtomic(path, l.Bytes())
 }
 
+// ReplaceFile заменяет файл списка целиком (импорт, редактор) под той же
+// блокировкой, что UpdateVPN: правки из CLI и веб-интерфейса не теряются.
+func ReplaceFile(path string, data []byte) error {
+	unlock, err := lockFile(path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return writeAtomic(path, data)
+}
+
 // lockFile берёт flock на служебный файл рядом со списком. Сам список
 // блокировать нельзя: rename подменяет inode, и блокировка теряет смысл.
 func lockFile(path string) (func(), error) {

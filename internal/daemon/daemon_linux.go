@@ -94,6 +94,14 @@ type daemon struct {
 	// обработчиками API из других горутин.
 	snap   atomic.Pointer[api.Status]
 	apiSrv *http.Server
+	// applyReq — запросы API на применение списков: выполняются в основном
+	// цикле, как перечитывание по SIGHUP, и не пересекаются с ним.
+	applyReq chan applyRequest
+}
+
+type applyRequest struct {
+	user, what string
+	done       chan error
 }
 
 // Run работает до SIGTERM/SIGINT. Ошибка первого применения конфигурации
@@ -113,7 +121,7 @@ func Run(ctx context.Context, o Options) error {
 	if err != nil {
 		return fmt.Errorf("netlink nftables: %w", err)
 	}
-	d := &daemon{Options: o, nft: nft, nl: nl, dyn: dyn, started: time.Now()}
+	d := &daemon{Options: o, nft: nft, nl: nl, dyn: dyn, started: time.Now(), applyReq: make(chan applyRequest)}
 
 	sigs := make(chan os.Signal, 4)
 	signal.Notify(sigs, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT)
@@ -143,16 +151,36 @@ func Run(ctx context.Context, o Options) error {
 				d.cleanup()
 				return nil
 			}
-			notify("RELOADING=1", "MONOTONIC_USEC="+monotonicUsec())
-			if err := d.apply(); err != nil {
-				d.Log.Error("перезагрузка не удалась, действуют прежние правила", "ошибка", err)
-				notify("READY=1", "STATUS=ошибка перезагрузки: "+err.Error())
-				continue
-			}
-			d.Log.Info("конфигурация перезагружена", "состояние", d.status())
-			notify("READY=1", "STATUS="+d.status())
+			_ = d.reload()
+		case req := <-d.applyReq:
+			d.Log.Info("изменение из веб-интерфейса", "пользователь", req.user, "изменение", req.what)
+			req.done <- d.reload()
 		}
 	}
+}
+
+// reload перечитывает конфиги и списки (SIGHUP, изменения из API).
+func (d *daemon) reload() error {
+	notify("RELOADING=1", "MONOTONIC_USEC="+monotonicUsec())
+	if err := d.apply(); err != nil {
+		d.Log.Error("перезагрузка не удалась, действуют прежние правила", "ошибка", err)
+		notify("READY=1", "STATUS=ошибка перезагрузки: "+err.Error())
+		return err
+	}
+	d.Log.Info("конфигурация перезагружена", "состояние", d.status())
+	notify("READY=1", "STATUS="+d.status())
+	return nil
+}
+
+// Apply — применение списков по запросу API (api.Backend).
+func (d *daemon) Apply(user, what string) error {
+	req := applyRequest{user: user, what: what, done: make(chan error, 1)}
+	select {
+	case d.applyReq <- req:
+	case <-time.After(time.Minute):
+		return fmt.Errorf("routerd занят, изменения применятся при следующем перечитывании")
+	}
+	return <-req.done
 }
 
 // apply читает конфиги и приводит систему к ним.
@@ -290,7 +318,7 @@ func (d *daemon) startAPI() {
 		d.Log.Error("сокет API не открыт, веб-интерфейс недоступен", "сокет", d.APISocket, "ошибка", err)
 		return
 	}
-	d.apiSrv = &http.Server{Handler: api.Handler(d), ReadHeaderTimeout: 10 * time.Second}
+	d.apiSrv = &http.Server{Handler: api.Handler(d, d.ConfigDir), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := d.apiSrv.Serve(l); err != nil && err != http.ErrServerClosed {
 			d.Log.Error("API", "ошибка", err)

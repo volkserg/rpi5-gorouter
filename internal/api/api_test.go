@@ -10,9 +10,17 @@ import (
 	"testing"
 )
 
-type fakeBackend struct{ st Status }
+type fakeBackend struct {
+	st      Status
+	applied []string
+	err     error
+}
 
-func (f fakeBackend) Status() Status { return f.st }
+func (f *fakeBackend) Status() Status { return f.st }
+func (f *fakeBackend) Apply(user, what string) error {
+	f.applied = append(f.applied, user+": "+what)
+	return f.err
+}
 
 func TestSocketRoundTrip(t *testing.T) {
 	// Путь к unix-сокету ограничен ~100 байтами — короткий каталог.
@@ -29,7 +37,7 @@ func TestSocketRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := &http.Server{Handler: Handler(fakeBackend{Status{Mode: "tproxy", Domains: 3}})}
+	srv := &http.Server{Handler: Handler(&fakeBackend{st: Status{Mode: "tproxy", Domains: 3}}, dir)}
 	go srv.Serve(l)
 	defer srv.Close()
 
