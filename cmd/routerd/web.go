@@ -157,6 +157,25 @@ func webPasswd(path, name string) int {
 	return 0
 }
 
+// allowWeb — откуда пускать в веб-интерфейс: LAN, подсети локальных
+// сервисов, loopback, link-local и ULA IPv6. Глобальные адреса IPv6 — нет:
+// если роутер выдаёт RPi публичный IPv6, панель не должна быть видна из
+// интернета.
+func allowWeb(cfg *config.Config) func(netip.Addr) bool {
+	ula := netip.MustParsePrefix("fc00::/7")
+	return func(a netip.Addr) bool {
+		if a.IsLoopback() || a.IsLinkLocalUnicast() || ula.Contains(a) || cfg.LANSubnet.Contains(a) {
+			return true
+		}
+		for _, l := range cfg.LocalClients {
+			if l.Net.Contains(a) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
 // readPassword — пароль с терминала (дважды, без эха) или строкой из stdin.
 func readPassword() (string, error) {
 	st, err := os.Stdin.Stat()
@@ -214,7 +233,9 @@ func webServe(configDir, users string) int {
 	if state == "" {
 		state = defaultWebState
 	}
-	listen := netip.AddrPortFrom(cfg.RPi5IP, cfg.WebPort)
+	// Все адреса: по имени <хост>.local (mDNS) браузер часто идёт по IPv6.
+	// Принимаются только устройства LAN (allowWeb).
+	listen := netip.AddrPortFrom(netip.IPv6Unspecified(), cfg.WebPort)
 	// Стенд: адрес, на котором слушать (сервис работает в namespace RPi).
 	if v := os.Getenv("ROUTERD_WEB_LISTEN"); v != "" {
 		if listen, err = netip.ParseAddrPort(v); err != nil {
@@ -225,6 +246,9 @@ func webServe(configDir, users string) int {
 	if h, err := os.Hostname(); err == nil && h != "" {
 		h = strings.ToLower(strings.TrimSuffix(h, "."+cfg.LocalDomain))
 		names = append(names, h, h+"."+cfg.LocalDomain)
+		if cfg.LocalDomain != "local" {
+			names = append(names, h+".local")
+		}
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -234,6 +258,7 @@ func webServe(configDir, users string) int {
 		StateDir:  state,
 		APISocket: api.SocketPath(),
 		CertIPs:   []netip.Addr{cfg.RPi5IP},
+		Allow:     allowWeb(cfg),
 		CertNames: names,
 		Version:   version,
 		Log:       log,

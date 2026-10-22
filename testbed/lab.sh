@@ -913,6 +913,10 @@ cert_has_rpi_ip() {
 }
 # api_sock <параметры curl…> <путь> — запрос к API routerd через его сокет (root).
 api_sock() { curl -s --max-time 30 --unix-socket /run/routerd/api.sock "${@:1:$#-1}" "http://routerd${!#}"; }
+cert_has_name() {
+    nsx client openssl s_client -connect 192.168.3.2:8443 </dev/null 2>/dev/null |
+        openssl x509 -noout -ext subjectAltName | grep -q "DNS:$1"
+}
 eq_ui_status() { [[ "$(ui /dev/null "${WEB_URL}/api/v1/status")" == "$1" ]]; }
 # Обращения за час через веб-интерфейс (файл ответа — в WEB_TMP).
 acc_fetch() { ui "${WEB_TMP}/acc" "${WEB_URL}/api/v1/access?hours=1" >/dev/null; }
@@ -1590,6 +1594,8 @@ cmd_test_web() {
     expect "сокет API: root:routerd-web, 660" eq "$(stat -c '%U:%G %a' /run/routerd/api.sock)" "root:routerd-web 660"
     expect "файл пользователей: root:routerd-web, 640" eq "$(stat -c '%U:%G %a' "${CONFIG_DIR}/web_users")" "root:routerd-web 640"
     expect "сертификат выпущен на 192.168.3.2" cert_has_rpi_ip
+    expect "  … и на $(hostname).local (имя mDNS)" cert_has_name "$(hostname).local"
+    expect "слушает все адреса, в том числе IPv6 (для .local)" bash -c "ip netns exec lab-rpi ss -Hltn 'sport = :8443' | grep -q '\[::\]:8443\|\*:8443'"
 
     expect "без входа: панель → /login" eq "$(nsx client curl -sk -o /dev/null -w '%{redirect_url}' "${WEB_URL}/")" "${WEB_URL}/login"
     expect "без входа: API — 401" eq "$(ui /dev/null "${WEB_URL}/api/v1/status")" 401

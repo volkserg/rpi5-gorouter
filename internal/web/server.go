@@ -45,7 +45,10 @@ const (
 
 // Options — параметры веб-интерфейса.
 type Options struct {
-	Listen    netip.AddrPort
+	// Listen — адрес и порт; неуказанный адрес ([::]) — все адреса IPv4 и IPv6.
+	Listen netip.AddrPort
+	// Allow — с каких адресов принимать соединения; nil — с любых.
+	Allow     func(netip.Addr) bool
 	UsersFile string
 	// StateDir — ключ сессий и сертификат (/var/lib/routerd-web).
 	StateDir  string
@@ -315,6 +318,30 @@ func humanWait(sec int) string {
 	return fmt.Sprintf("%d мин", (sec+59)/60)
 }
 
+// allowListener закрывает соединения с адресов, которым нельзя: веб-интерфейс
+// слушает все адреса (в том числе IPv6 для имени .local), но принимает
+// только устройства LAN.
+type allowListener struct {
+	net.Listener
+	allow func(netip.Addr) bool
+	log   *slog.Logger
+}
+
+func (l *allowListener) Accept() (net.Conn, error) {
+	for {
+		c, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		ap, err := netip.ParseAddrPort(c.RemoteAddr().String())
+		if err == nil && l.allow(ap.Addr().Unmap()) {
+			return c, nil
+		}
+		l.log.Debug("соединение не из LAN отклонено", "адрес", c.RemoteAddr().String())
+		c.Close()
+	}
+}
+
 // Serve запускает веб-интерфейс и работает до отмены ctx.
 func Serve(ctx context.Context, o Options) error {
 	s, err := newServer(o)
@@ -344,9 +371,16 @@ func Serve(ctx context.Context, o Options) error {
 		IdleTimeout:       2 * time.Minute,
 		ErrorLog:          slog.NewLogLogger(o.Log.Handler(), slog.LevelDebug),
 	}
+	ln, err := net.Listen("tcp", o.Listen.String())
+	if err != nil {
+		return err
+	}
+	if o.Allow != nil {
+		ln = &allowListener{Listener: ln, allow: o.Allow, log: o.Log}
+	}
 	errc := make(chan error, 1)
-	go func() { errc <- srv.ListenAndServeTLS("", "") }()
-	o.Log.Info("веб-интерфейс запущен", "адрес", "https://"+o.Listen.String())
+	go func() { errc <- srv.ServeTLS(ln, "", "") }()
+	o.Log.Info("веб-интерфейс запущен", "порт", o.Listen.Port(), "адреса", o.CertIPs, "имена", o.CertNames)
 	select {
 	case err := <-errc:
 		return err
