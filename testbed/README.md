@@ -29,6 +29,7 @@ orb -m routerd-lab sudo ./testbed/lab.sh test-ansible   # роль Ansible во 
 orbctl restart routerd-lab && orb -m routerd-lab sudo ./testbed/lab.sh test-boot  # после перезагрузки
 orb -m routerd-lab sudo ./testbed/lab.sh test-no-tunnel # без клиента туннеля, затем GOST без перезапуска
 orb -m routerd-lab sudo ./testbed/lab.sh test-local-client  # сервис на RPi как клиент LAN, все режимы
+orb -m routerd-lab sudo ./testbed/lab.sh test-web       # веб-интерфейс: вход, сессии, CSRF, API демона
 orb -m routerd-lab sudo ./testbed/lab.sh test-idle 300  # долгое простаивающее соединение (долго)
 orb -m routerd-lab sudo ./testbed/lab.sh mode tproxy open
 ```
@@ -54,3 +55,14 @@ Root, в отдельном netns:
 GOOS=linux GOARCH=arm64 go test -c -tags integration -o fw.test ./internal/firewall
 orb -m routerd-lab sudo ./fw.test -test.v
 ```
+
+## Веб-интерфейс без стенда
+
+```bash
+go run ./testbed/webdemo   # https://127.0.0.1:8443, вход demo / demo-password
+```
+
+Поддельный демон: состояние туннеля меняется каждые 20 с (`-period`), чтобы
+были видны все состояния панели. На стенде интерфейс доступен клиентам LAN по
+`https://192.168.3.2:8443` (учётная запись — `LAB_WEB_USER`/`LAB_WEB_PASS`
+в `lab.sh`).

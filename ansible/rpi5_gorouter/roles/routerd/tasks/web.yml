@@ -1,0 +1,37 @@
+---
+# Пользователи веб-интерфейса из routerd_web_users: новые добавляются,
+# пароль меняется, только если не совпадает (routerd web check). Других
+# пользователей роль не трогает (sudo routerd web passwd|deluser на RPi).
+- name: Пароль пользователя веб-интерфейса совпадает?
+  ansible.builtin.command:
+    cmd: "{{ routerd_bin_dir }}/routerd web check {{ item.name }}"
+    stdin: "{{ item.password }}"
+  environment:
+    ROUTERD_CONFIG_DIR: "{{ routerd_config_dir }}"
+  loop: "{{ routerd_web_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: _routerd_web_check
+  changed_when: false
+  failed_when: _routerd_web_check.rc not in [0, 1]
+  no_log: true
+
+- name: Пользователь веб-интерфейса
+  ansible.builtin.command:
+    cmd: "{{ routerd_bin_dir }}/routerd web passwd {{ item.item.name }}"
+    stdin: "{{ item.item.password }}"
+  environment:
+    ROUTERD_CONFIG_DIR: "{{ routerd_config_dir }}"
+  loop: "{{ _routerd_web_check.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when: item.rc != 0
+  changed_when: true
+  no_log: true
+
+- name: Права файла пользователей веб-интерфейса
+  ansible.builtin.file:
+    path: "{{ routerd_config_dir }}/web_users"
+    group: routerd-web
+    mode: "0640"
+  failed_when: false

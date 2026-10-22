@@ -122,7 +122,17 @@ func (x *ctx) piholeConfig(cfg *config.Config) {
 
 // logUnits — юниты, чьи журналы показывает logs.
 func (x *ctx) logUnits() []string {
-	return []string{services.UnitRouterd, x.gostUnit(), services.UnitDNSCrypt, services.UnitPihole}
+	units := []string{services.UnitRouterd, x.gostUnit(), services.UnitDNSCrypt, services.UnitPihole}
+	if x.webUI() {
+		units = append(units, services.UnitWeb)
+	}
+	return units
+}
+
+// webUI — включён ли веб-интерфейс (WEB_UI в router.conf).
+func (x *ctx) webUI() bool {
+	cfg, _, err := config.Load(x.routerConf())
+	return err == nil && cfg.WebUI
 }
 
 // gostUnit — юнит клиента туннеля из router.conf (VPN_SERVICE). Если конфиг
@@ -159,7 +169,11 @@ func cmdStatus(x *ctx, _ []string) int {
 	if m, err := x.Services(ctx); err != nil {
 		x.out("  %s?%s systemd недоступен: %v", x.c.Yellow, x.c.NC, err)
 	} else {
-		sts, err := m.States(ctx, services.StatusUnits(x.gostUnit())...)
+		units := services.StatusUnits(x.gostUnit())
+		if x.webUI() {
+			units = append(units, services.UnitWeb)
+		}
+		sts, err := m.States(ctx, units...)
 		if err != nil {
 			x.out("  %s?%s ошибка запроса состояния: %v", x.c.Yellow, x.c.NC, err)
 		}

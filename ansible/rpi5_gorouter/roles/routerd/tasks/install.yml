@@ -40,7 +40,7 @@
     dest: "{{ routerd_bin_dir }}/routerd"
     remote_src: true
     mode: "0755"
-  notify: restart routerd
+  notify: [restart routerd, restart routerd-web]
 
 - name: Команды управления (symlink на routerd)
   ansible.builtin.file:
@@ -65,6 +65,31 @@
     remote_src: true
     mode: "0644"
   notify: [daemon-reload]
+
+# Веб-интерфейс: системный пользователь без прав; его группе открыт сокет
+# API демона и файл пользователей интерфейса.
+- name: Группа routerd-web
+  ansible.builtin.group:
+    name: routerd-web
+    system: true
+
+- name: Пользователь routerd-web
+  ansible.builtin.user:
+    name: routerd-web
+    group: routerd-web
+    system: true
+    create_home: false
+    home: /nonexistent
+    shell: /usr/sbin/nologin
+    comment: routerd web UI
+
+- name: Юнит routerd-web.service
+  ansible.builtin.copy:
+    src: "{{ _routerd_dir }}/deploy/systemd/routerd-web.service"
+    dest: /etc/systemd/system/routerd-web.service
+    remote_src: true
+    mode: "0644"
+  notify: [daemon-reload, restart routerd-web]
 
 - name: Скрипты автодополнения
   ansible.builtin.command: "{{ routerd_bin_dir }}/routerd completion {{ item }}"

@@ -59,6 +59,11 @@ func cmdInfo(x *ctx, _ []string) int {
 		x.out("  %-19s %s %s: адрес %s, шлюз %s (%s)", title, l.Name, l.Net, l.ClientIP(), l.HostIP(), l.Iface())
 	}
 	x.out("  vpn_dynamic:        таймаут %s", shortDuration(cfg.VPNDynamicTimeout))
+	if cfg.WebUI {
+		x.out("  Веб-интерфейс:      https://%s:%d", cfg.RPi5IP, cfg.WebPort)
+	} else {
+		x.out("  Веб-интерфейс:      выключен (WEB_UI=no)")
+	}
 	x.out("")
 
 	x.out("%sСписки:%s", x.c.Yellow, x.c.NC)

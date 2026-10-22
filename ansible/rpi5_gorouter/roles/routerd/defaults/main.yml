@@ -26,6 +26,11 @@ routerd_dns_overrides: null
 routerd_vpn_file: null
 routerd_dns_override_file: null
 
+# Пользователи веб-интерфейса (WEB_UI: yes в routerd_conf):
+# [{name: admin, password: "{{ vault_routerd_web_password }}"}]. Роль
+# добавляет их и меняет пароль, если он другой; остальных не трогает.
+routerd_web_users: []
+
 # Pi-hole (официальный установщик) и dnscrypt-proxy (apt) — если их нет.
 # Клиент туннеля (GOST, gost-run.service) роль не ставит и не настраивает.
 routerd_install_deps: true

@@ -37,6 +37,7 @@
 #   lab.sh test-boot      после перезагрузки машины стенда: автозапуск, аварийный перезапуск
 #   lab.sh test-no-tunnel routerd без клиента туннеля, затем GOST без перезапуска routerd
 #   lab.sh test-local-client  сервис на RPi как клиент LAN (LOCAL_CLIENTS), все режимы
+#   lab.sh test-web       веб-интерфейс: вход, сессии, CSRF, API демона
 #   lab.sh test-idle [с]  долгое простаивающее соединение через туннель (по умолчанию 120 с)
 #   lab.sh status         адреса и маршруты во всех namespace
 #   lab.sh exec <ns> cmd  выполнить команду в namespace (rpi, client, router, inet, entry, exit, lan)
@@ -379,7 +380,7 @@ selftest() {
 LAB_UNITS=(lab-dns-public lab-dohd lab-dns-corp lab-dns-vpn lab-web-direct lab-web-vpn
     lab-nginx-entry lab-gost-entry lab-nginx-exit lab-gost-exit)
 # Юниты стенда: управляемые routerd (имена как на бою) и вспомогательные.
-STAND_UNITS=(lab-local-app routerd-local@lab-app gost-run routerd pihole-FTL dnscrypt-proxy dnscrypt-proxy.socket
+STAND_UNITS=(routerd-web lab-local-app routerd-local@lab-app gost-run routerd pihole-FTL dnscrypt-proxy dnscrypt-proxy.socket
     lab-dns-corp lab-dns-vpn lab-dns-public lab-dohd lab-web-direct lab-web-vpn
     lab-nginx-entry lab-gost-entry lab-nginx-exit lab-gost-exit)
 
@@ -610,6 +611,9 @@ cmd_install() {
     # (bootstrap, bootstrap-dns), запуск — ниже, после сервисов стенда.
     run_installer --skip-deps --no-start
     in_ns routerd rpi
+    # Веб-интерфейс слушает RPI5_IP — в namespace rpi; пользователь стенда.
+    in_ns routerd-web rpi
+    printf '%s\n' "${LAB_WEB_PASS}" | ROUTERD_CONFIG_DIR="${CONFIG_DIR}" routerd web passwd "${LAB_WEB_USER}" >/dev/null
     # Сеть локального сервиса создаётся из namespace rpi (на бою — из основного).
     # Через nsenter --net, а не NetworkNamespacePath: с ним systemd даёт юниту своё
     # пространство монтирования, и закрепление namespace в /run/netns не было бы
@@ -675,6 +679,8 @@ UNIT
     log_info "Клиент получил по DHCP $(client_ip)"
     # Сеть локального сервиса — заново (новый бинарник, конфиг); сервис — следом (Requires).
     systemctl restart routerd-local@lab-app.service lab-local-app.service
+    systemctl restart routerd-web.service
+    log_info "Веб-интерфейс: ${WEB_URL} (${LAB_WEB_USER} / пароль — LAB_WEB_PASS в lab.sh)"
 }
 
 # Локальный сервис стенда — юнит из документированного примера
@@ -876,6 +882,28 @@ wait_for() {
     return 1
 }
 web_ok() { nsx client curl -fsS --max-time 3 "http://$1/" >/dev/null 2>&1; }
+
+# Веб-интерфейс стенда: учётная запись только для стенда.
+WEB_URL="https://192.168.3.2:8443"
+LAB_WEB_USER=admin
+LAB_WEB_PASS=lab-web-pass
+# ui <файл тела> <curl-аргументы…> — запрос к веб-интерфейсу от клиента LAN
+# (cookie — в WEB_JAR), печатает код ответа.
+ui() {
+    local out=$1
+    shift
+    nsx client curl -sk --max-time 10 -o "${out}" -w '%{http_code}' -b "${WEB_JAR}" -c "${WEB_JAR}" "$@"
+}
+ui_login() {
+    ui /dev/null -X POST -H 'Content-Type: application/json' -H 'X-Routerd-CSRF: 1' \
+        --data "{\"username\":\"$1\",\"password\":\"$2\",\"remember\":true}" "${WEB_URL}/api/login"
+}
+ui_up() { [[ "$(ui /dev/null "${WEB_URL}/login")" == 200 ]]; }
+cert_has_rpi_ip() {
+    nsx client openssl s_client -connect 192.168.3.2:8443 </dev/null 2>/dev/null |
+        openssl x509 -noout -ext subjectAltName | grep -q 'IP Address:192.168.3.2'
+}
+eq_ui_status() { [[ "$(ui /dev/null "${WEB_URL}/api/v1/status")" == "$1" ]]; }
 # cached_ok <имя> <адрес> — запрос по адресу из DNS-кэша клиента, без нового DNS-запроса.
 cached_ok() { nsx client curl -fsS --max-time 3 --resolve "$1:80:$2" "http://$1/" >/dev/null 2>&1; }
 # direct_block on|off — «интернет» не пускает WAN роутера к direct.example
@@ -1129,9 +1157,11 @@ cmd_test_ansible() {
         die "ansible-galaxy не установил коллекцию"
     log_info "Коллекция установлена, архив ${archive##*/}"
 
-    # Стенд: routerd — в namespace rpi (юнит пишет роль); клиент туннеля —
-    # юнит стенда под режим, как его ставят вручную.
+    # Стенд: routerd и веб-интерфейс — в namespace rpi (юниты пишет роль);
+    # клиент туннеля — юнит стенда под режим, как его ставят вручную.
     in_ns routerd rpi
+    in_ns routerd-web rpi
+    WEB_JAR="$(mktemp)"
 
     # play <режим> [параметры ansible-playbook…]
     play() {
@@ -1178,11 +1208,13 @@ cmd_test_ansible() {
             eq "$(readlink /usr/local/bin/rsc) $(readlink /usr/local/bin/router_service_ctl)" "routerd routerd"
         expect "LOCAL_CLIENTS с пробелом в значении: оба сервиса в конфиге" \
             bash -c "ROUTERD_CONFIG_DIR=${CONFIG_DIR} rsc info | grep -q 'lab-app2 10.99.0.4/30'"
+        expect "веб-интерфейс: вход пользователем из routerd_web_users" \
+            eq "$(wait_for 20 ui_up; ui_login admin lab-web-pass)" 200
         wait_for 15 web_ok vpn.example || true
         [[ ${fails} -eq 0 ]] || failed+=("${mode}: роль")
         (cmd_test) || failed+=("${mode}")
     done
-    rm -rf "${coll}"
+    rm -rf "${coll}" "${WEB_JAR}"
     [[ ${#failed[@]} -eq 0 ]] || die "не пройдено: ${failed[*]}"
     log_info "Роль: все режимы пройдены."
 }
@@ -1498,6 +1530,63 @@ cmd_test_install() {
     log_info "install.sh: все проверки пройдены."
 }
 
+#===============================================================================
+# test-web: веб-интерфейс (после install)
+#===============================================================================
+cmd_test_web() {
+    need_root
+    fails=0
+    local tmp
+    tmp="$(mktemp -d)"
+    WEB_JAR="${tmp}/jar"
+    # Перезапуск обнуляет счётчик неудачных входов прошлых прогонов.
+    systemctl restart routerd-web
+    wait_for 20 ui_up || die "веб-интерфейс не отвечает: journalctl -u routerd-web"
+    echo "Веб-интерфейс:"
+    expect "routerd-web работает от пользователя routerd-web" eq "$(systemctl show -P User routerd-web)" routerd-web
+    expect "сокет API: root:routerd-web, 660" eq "$(stat -c '%U:%G %a' /run/routerd/api.sock)" "root:routerd-web 660"
+    expect "файл пользователей: root:routerd-web, 640" eq "$(stat -c '%U:%G %a' "${CONFIG_DIR}/web_users")" "root:routerd-web 640"
+    expect "сертификат выпущен на 192.168.3.2" cert_has_rpi_ip
+
+    expect "без входа: панель → /login" eq "$(nsx client curl -sk -o /dev/null -w '%{redirect_url}' "${WEB_URL}/")" "${WEB_URL}/login"
+    expect "без входа: API — 401" eq "$(ui /dev/null "${WEB_URL}/api/v1/status")" 401
+    expect "неверный пароль — 401" eq "$(ui_login "${LAB_WEB_USER}" wrong-password)" 401
+    expect "вход без заголовка CSRF — 403" eq "$(ui /dev/null -X POST -H 'Content-Type: application/json' \
+        --data '{"username":"x","password":"y"}' "${WEB_URL}/api/login")" 403
+    expect "вход" eq "$(ui_login "${LAB_WEB_USER}" "${LAB_WEB_PASS}")" 200
+    expect "  … cookie HttpOnly и Secure" grep -q '^#HttpOnly_192.168.3.2.*TRUE.*routerd_session' "${WEB_JAR}"
+    expect "панель после входа" eq "$(ui "${tmp}/page" "${WEB_URL}/")" 200
+    expect "  … страница панели" grep -q 'app.js' "${tmp}/page"
+    expect "состояние демона через API" eq "$(ui "${tmp}/status" "${WEB_URL}/api/v1/status")" 200
+    expect "  … режим $(conf_get VPN_MODE), туннель доступен" \
+        grep -q "\"mode\":\"$(conf_get VPN_MODE)\".*\"tunnel_up\":true" "${tmp}/status"
+    expect "изменяющий запрос без CSRF — 403" eq "$(ui /dev/null -X POST "${WEB_URL}/api/v1/status")" 403
+
+    log_info "routerd остановлен и снова запущен"
+    systemctl stop routerd
+    expect "демон остановлен — 502 с объяснением" eq "$(ui "${tmp}/err" "${WEB_URL}/api/v1/status")" 502
+    expect "  … текст ошибки" grep -q 'routerd не отвечает' "${tmp}/err"
+    ctl start >/dev/null
+    expect "после запуска демона API снова доступен" wait_for 30 eq_ui_status 200
+
+    log_info "Смена пароля завершает сессии"
+    printf 'new-%s\n' "${LAB_WEB_PASS}" | ROUTERD_CONFIG_DIR="${CONFIG_DIR}" routerd web passwd "${LAB_WEB_USER}" >/dev/null
+    expect "прежняя сессия недействительна" eq "$(ui /dev/null "${WEB_URL}/api/v1/status")" 401
+    printf '%s\n' "${LAB_WEB_PASS}" | ROUTERD_CONFIG_DIR="${CONFIG_DIR}" routerd web passwd "${LAB_WEB_USER}" >/dev/null
+    expect "вход с прежним паролем снова работает" eq "$(ui_login "${LAB_WEB_USER}" "${LAB_WEB_PASS}")" 200
+    expect "выход" eq "$(ui /dev/null -X POST -H 'X-Routerd-CSRF: 1' "${WEB_URL}/api/logout")" 200
+    expect "  … после выхода API — 401" eq "$(ui /dev/null "${WEB_URL}/api/v1/status")" 401
+
+    log_info "Подбор пароля"
+    local i
+    for i in 1 2 3 4 5 6; do ui_login "${LAB_WEB_USER}" "wrong-${i}" >/dev/null; done
+    expect "после 6 неудач — 429, даже с верным паролем" eq "$(ui_login "${LAB_WEB_USER}" "${LAB_WEB_PASS}")" 429
+    systemctl restart routerd-web
+    rm -rf "${tmp}"
+    [[ ${fails} -eq 0 ]] || die "не пройдено проверок: ${fails}"
+    log_info "Веб-интерфейс: все проверки пройдены."
+}
+
 case "${1:-help}" in
 bootstrap) cmd_bootstrap ;;
 bootstrap-dns) cmd_bootstrap_dns ;;
@@ -1516,6 +1605,7 @@ test-ansible) cmd_test_ansible ;;
 test-boot) cmd_test_boot ;;
 test-no-tunnel) cmd_test_no_tunnel ;;
 test-local-client) cmd_test_local_client ;;
+test-web) cmd_test_web ;;
 boot-up) cmd_boot_up ;;
 test-idle)
     shift

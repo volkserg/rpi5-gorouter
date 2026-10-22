@@ -15,6 +15,8 @@ const (
 	UnitDNSCrypt       = "dnscrypt-proxy.service"
 	UnitPihole         = "pihole-FTL.service"
 	UnitRouterd        = "routerd.service"
+	// UnitWeb — веб-интерфейс (WEB_UI=yes).
+	UnitWeb = "routerd-web.service"
 	// DefaultUnitGost — юнит клиента туннеля по умолчанию (VPN_SERVICE).
 	DefaultUnitGost = "gost-run.service"
 	// UnitSystemDnsmasq — системный dnsmasq Debian: занимает :53, конфликтует с routerd.

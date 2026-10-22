@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/volkserg/rpi5-gorouter/internal/api"
 	"github.com/volkserg/rpi5-gorouter/internal/cli"
 	"github.com/volkserg/rpi5-gorouter/internal/config"
 	"github.com/volkserg/rpi5-gorouter/internal/daemon"
@@ -31,6 +32,8 @@ func runDaemon() int {
 		StateDir:  env.StateDir,
 		Log:       log,
 		Services:  env.Services,
+		Version:   version,
+		APISocket: api.SocketPath(),
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "routerd: %v\n", err)

@@ -12,7 +12,7 @@
     mode: "0644"
     validate: "{{ routerd_bin_dir }}/rsc check-config --router-conf %s"
     backup: true
-  notify: reload routerd
+  notify: [reload routerd, restart routerd-web]
 
 - name: Файл vpn_domains.txt
   ansible.builtin.template:

@@ -12,6 +12,9 @@
 - name: Конфиги
   ansible.builtin.import_tasks: config.yml
 
+- name: Пользователи веб-интерфейса
+  ansible.builtin.import_tasks: web.yml
+
 - name: Применить изменения до запуска
   ansible.builtin.meta: flush_handlers
 

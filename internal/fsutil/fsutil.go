@@ -26,3 +26,30 @@ func SyncDir(dir string) error {
 	defer d.Close()
 	return d.Sync()
 }
+
+// WriteFile атомарно заменяет path содержимым data с правами perm; gid >= 0
+// задаёт группу файла (до замены — без промежутка с чужими правами).
+func WriteFile(path string, data []byte, perm os.FileMode, gid int) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name()) // после успешного rename — no-op
+	err = tmp.Chmod(perm)
+	if err == nil && gid >= 0 {
+		err = tmp.Chown(-1, gid)
+	}
+	if err == nil {
+		_, err = tmp.Write(data)
+	}
+	if err == nil {
+		err = tmp.Sync()
+	}
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	return Rename(tmp.Name(), path)
+}

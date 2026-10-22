@@ -30,6 +30,7 @@ UDP/443 к VPN-адресам → REJECT icmp port-unreachable (браузер �
 | Адрес RPi | NetworkManager по D-Bus + Checkpoint (автооткат) |
 | Сервисы | systemd по D-Bus (`go-systemd`), состояние — `/proc/net`, счётчики nft |
 | Pi-hole | точечная правка `pihole.toml` при остановленном FTL |
+| Веб-интерфейс | `net/http` + HTML/JS без сборки (`embed`), API демона — JSON через unix-сокет |
 
 Внешние компоненты, которыми routerd управляет: Pi-hole,
 dnscrypt-proxy, GOST.
@@ -176,6 +177,30 @@ dnscrypt-proxy, GOST.
 - `check-config` отклоняет подсеть, пересекающуюся с LAN, другими сервисами и
   подсетями из `vpn_domains.txt` (трафик сервиса к его шлюзу ушёл бы в туннель).
 
+### Веб-интерфейс
+
+- Два процесса: демон (root, урезанный юнит) открывает API в
+  `/run/routerd/api.sock` (0660, группа `routerd-web`), а `routerd-web.service`
+  (`routerd web serve`, пользователь `routerd-web`, без capabilities, жёсткая
+  песочница systemd) раздаёт страницы и проверяет вход. Все действия выполняет
+  демон; ошибка в веб-части не затрагивает маршрутизацию, а остановленный
+  демон интерфейс показывает как «routerd не отвечает».
+- API демона не проверяет пользователей: доступ — по правам на сокет.
+  Веб-сервис передаёт логин в заголовке `X-Routerd-User` (для журнала).
+- HTTPS на `RPI5_IP:WEB_PORT` (80/443 заняты Pi-hole). Сертификат
+  самоподписанный (ECDSA P-256, 10 лет), перевыпускается, только если сменился
+  адрес или имя RPi или срок подходит к концу.
+- Пользователи — `web_users` в каталоге конфигов (`логин:pbkdf2-sha256$…`,
+  root:routerd-web 0640), только из терминала (`routerd web passwd`). Сессия —
+  подписанная HMAC cookie без хранения на сервере; в подпись входит хеш пароля,
+  поэтому смена пароля завершает сессии. Cookie `Secure`, `HttpOnly`,
+  `SameSite=Strict`; 12 ч или 30 дней («запомнить устройство»).
+- Вход по MAC-адресу отклонён: MAC в LAN подделывается, а телефоны используют
+  случайные MAC.
+- Защита: изменяющие запросы — только с заголовком `X-Routerd-CSRF` и своим
+  `Origin`; CSP без inline-скриптов и стилей; после 5 неудачных входов с адреса
+  — пауза от 1 до 15 минут; не больше двух проверок пароля одновременно.
+
 ### Режимы VPN
 
 | `VPN_MODE` | GOST на RPi | routerd | Через VPN |
@@ -246,11 +271,15 @@ internal/netcfg/      apply-network: NetworkManager по D-Bus + Checkpoint
 internal/localclient/ сеть локальных сервисов: netns, veth, resolv.conf (routerd local-client)
 internal/daemon/      routerd run: применение, sd_notify (notify-reload), SIGHUP,
                       слежение за туннелем, VPN_FAILOVER, очистка
-deploy/systemd/       routerd.service, routerd-local@.service, примеры gost-run.service и local-app.service
+internal/api/         API демона: JSON через unix-сокет (для веб-интерфейса)
+internal/web/         веб-интерфейс: HTTPS, вход и сессии, страницы (assets/), шлюз к API
+deploy/systemd/       routerd.service, routerd-local@.service, routerd-web.service,
+                      примеры gost-run.service и local-app.service
 deploy/config/        примеры router.conf (все ключи), vpn_domains.txt, dns_override.txt
 install.sh            установка/обновление на RPi (bash — единственное место вне Go)
 ansible/rpi5_gorouter/ коллекция Ansible: роль routerd (установка из релиза, конфиги из инвентаря)
-testbed/              стенд: lab.sh, эталон ядра RPi, конфиги стенда и узлов туннеля
+testbed/              стенд: lab.sh, эталон ядра RPi, конфиги стенда и узлов туннеля;
+                      webdemo — веб-интерфейс с поддельным демоном на машине разработчика
 ```
 
 Юнит-тесты — всё, что не трогает ядро (работают на macOS и Linux).
@@ -266,6 +295,10 @@ Linux-специфичное — под `//go:build linux`, проверяетс
 | `/etc/systemd/system/routerd.service` | юнит routerd |
 | `/etc/systemd/system/routerd-local@.service` | сеть локального сервиса (`LOCAL_CLIENTS`) |
 | `/run/netns/<имя>`, `/etc/netns/<имя>/resolv.conf` | namespace и DNS локального сервиса |
+| `/etc/systemd/system/routerd-web.service` | веб-интерфейс (`WEB_UI=yes`) |
+| `/usr/local/etc/router_service/web_users` | пользователи веб-интерфейса |
+| `/var/lib/routerd-web/` | ключ подписи сессий, самоподписанный сертификат |
+| `/run/routerd/api.sock` | API демона для веб-интерфейса |
 | `/etc/systemd/system/dnscrypt-proxy.socket.d/routerd.conf` | адрес dnscrypt-proxy (`DNSCRYPT_ADDR`) |
 | `/usr/local/bin/routerd`, `rsc`, `router_service_ctl` | бинарник и symlink'и на него |
 

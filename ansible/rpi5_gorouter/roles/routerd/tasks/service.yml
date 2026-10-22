@@ -13,3 +13,10 @@
     {{ ['dnscrypt-proxy.socket']
        + (['pihole-FTL.service'] if 'pihole-FTL.service' in ansible_facts.services else [])
        + ['routerd.service'] }}
+
+# Веб-интерфейс — по WEB_UI в routerd_conf.
+- name: Веб-интерфейс routerd-web
+  ansible.builtin.systemd:
+    name: routerd-web.service
+    enabled: "{{ _routerd_web_ui | bool }}"
+    state: "{{ 'started' if _routerd_web_ui | bool else 'stopped' }}"

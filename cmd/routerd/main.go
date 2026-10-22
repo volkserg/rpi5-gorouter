@@ -6,6 +6,7 @@
 //	routerd version
 //	routerd completion bash|zsh   автодополнение rsc и router_service_ctl
 //	routerd local-client up|down <имя>  сеть локального сервиса (routerd-local@.service)
+//	routerd web serve|passwd|deluser|users  веб-интерфейс (routerd-web.service) и его пользователи
 //	routerd <команда> …           команды управления (routerd ctl <команда> — то же)
 //	rsc <команда> …               то же через symlink на routerd
 //	router_service_ctl <команда>  то же через symlink на routerd
@@ -62,6 +63,8 @@ func run(args []string) int {
 		return 0
 	case "local-client":
 		return runLocalClient(env.ConfigDir, args[2:])
+	case "web":
+		return runWeb(env.ConfigDir, args[2:])
 	case "help", "--help", "-h":
 		usage(os.Stdout)
 		fmt.Println()
@@ -76,6 +79,7 @@ func usage(w io.Writer) {
   routerd version                     версия сборки
   routerd completion <bash|zsh>       автодополнение rsc и router_service_ctl
   routerd local-client <up|down> <имя> сеть локального сервиса (из routerd-local@<имя>.service)
+  routerd web <serve|passwd|deluser|users> веб-интерфейс и его пользователи (routerd web help)
   routerd <команда> [аргументы]       команды управления (routerd help; короче — rsc <команда>)
 `)
 }

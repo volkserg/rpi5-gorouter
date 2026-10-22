@@ -166,7 +166,8 @@ func TestRouterdKeys(t *testing.T) {
 		cfg.VPNDynamicTimeout != 24*time.Hour || cfg.DNSUpstream.String() != "127.0.0.1:5353" ||
 		cfg.FilterAAAA != FilterAAAAVPN || !cfg.DNSECS ||
 		!cfg.DHCPEnabled || cfg.DHCPLeaseTime != 24*time.Hour || cfg.LocalDomain != "lan" ||
-		!cfg.PiholeManage || cfg.PiholeTOML != "/etc/pihole/pihole.toml" || cfg.DNSCryptAddr.String() != "127.0.0.1:5053" {
+		!cfg.PiholeManage || cfg.PiholeTOML != "/etc/pihole/pihole.toml" || cfg.DNSCryptAddr.String() != "127.0.0.1:5053" ||
+		cfg.WebUI || cfg.WebPort != 8443 {
 		t.Errorf("дефолты: %+v", cfg)
 	}
 	cfg, err = FromValues(map[string]string{"VPN_PORT": "12345", "QUIC_REJECT": "no",
@@ -194,6 +195,9 @@ func TestRouterdKeys(t *testing.T) {
 		"QUIC_REJECT=maybe":  {"QUIC_REJECT": "maybe"},
 		"таймаут меньше 1s":  {"VPN_DYNAMIC_TIMEOUT": "500ms"},
 		"upstream не IP":     {"DNS_UPSTREAM": "pihole.lan"},
+		"WEB_UI=maybe":       {"WEB_UI": "maybe"},
+		"WEB_PORT=443":       {"WEB_PORT": "443"},
+		"WEB_PORT=VPN_PORT":  {"WEB_PORT": "1080"},
 	} {
 		if _, err := FromValues(v); err == nil {
 			t.Errorf("%s: ожидалась ошибка", name)

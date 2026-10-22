@@ -7,9 +7,11 @@
 #   1. Ставит недостающее: dnscrypt-proxy (apt), Pi-hole (официальный
 #      установщик).
 #   2. Ставит routerd, команды rsc и router_service_ctl, routerd.service,
-#      шаблон routerd-local@.service (LOCAL_CLIENTS), автодополнение bash/zsh;
-#      конфиги — примеры, только если их нет.
-#   3. check-config, apply-network --dry-run, включение и запуск.
+#      шаблон routerd-local@.service (LOCAL_CLIENTS), веб-интерфейс
+#      routerd-web.service (пользователь routerd-web), автодополнение
+#      bash/zsh; конфиги — примеры, только если их нет.
+#   3. check-config, apply-network --dry-run, включение и запуск
+#      (routerd-web — если WEB_UI=yes).
 #
 # Клиент туннеля (GOST, юнит VPN_SERVICE — по умолчанию gost-run.service)
 # ставится и настраивается отдельно — docs/TUNNEL.md.
@@ -213,6 +215,18 @@ log_info "  ${UNIT_DIR}/routerd.service"
 # Сеть локальных сервисов (LOCAL_CLIENTS) — шаблон, экземпляры подключает юнит сервиса.
 install -m 0644 "${SRC_DIR}/deploy/systemd/routerd-local@.service" "${UNIT_DIR}/routerd-local@.service"
 log_info "  ${UNIT_DIR}/routerd-local@.service"
+# Веб-интерфейс: системный пользователь без прав; его группе открыт сокет API
+# демона и файл пользователей интерфейса.
+if ! getent group routerd-web >/dev/null; then
+    groupadd --system routerd-web
+fi
+if ! getent passwd routerd-web >/dev/null; then
+    useradd --system --gid routerd-web --no-create-home --home-dir /nonexistent \
+        --shell /usr/sbin/nologin --comment "routerd web UI" routerd-web
+fi
+[[ -f "${CONFIG_DIR}/web_users" ]] && chgrp routerd-web "${CONFIG_DIR}/web_users" && chmod 0640 "${CONFIG_DIR}/web_users"
+install -m 0644 "${SRC_DIR}/deploy/systemd/routerd-web.service" "${UNIT_DIR}/routerd-web.service"
+log_info "  ${UNIT_DIR}/routerd-web.service (пользователь routerd-web)"
 mkdir -p "$(dirname "${BASH_COMPLETION}")" "$(dirname "${ZSH_COMPLETION}")"
 "${BIN_DIR}/routerd" completion bash >"${BASH_COMPLETION}"
 # bash-completion подгружает файл по имени команды — второе имя ссылкой.
@@ -251,6 +265,16 @@ if [[ "${START}" == true ]]; then
     ctl restart || die "запуск не удался: rsc logs"
 fi
 
+# Веб-интерфейс — по WEB_UI.
+WEB_UI="$(conf_get WEB_UI no)"
+if [[ "${WEB_UI}" == yes ]]; then
+    systemctl enable routerd-web.service >/dev/null 2>&1
+    [[ "${START}" == true ]] && systemctl restart routerd-web.service
+    log_info "routerd-web.service: в автозапуске, https://$(conf_get RPI5_IP 192.168.3.2):$(conf_get WEB_PORT 8443)"
+elif unit_exists routerd-web.service; then
+    systemctl disable --now routerd-web.service >/dev/null 2>&1 || true
+fi
+
 echo
 log_info "Готово: ${VERSION}"
 [[ "${NETWORK_PENDING}" == true ]] &&
@@ -265,4 +289,7 @@ elif ! systemctl is-enabled --quiet "${gost_unit}"; then
 fi
 [[ "$(conf_get DHCP_ENABLED yes)" == yes ]] &&
     log_warn "DHCP раздаёт routerd — выключите DHCP-сервер на роутере $(conf_get ROUTER_IP 192.168.3.1)"
+if [[ "${WEB_UI}" == yes ]] && [[ "$("${BIN_DIR}/routerd" web users)" == "(нет пользователей)" ]]; then
+    log_warn "Веб-интерфейс: нет пользователей — sudo routerd web passwd <логин>"
+fi
 echo "Состояние: rsc status    Журнал: rsc logs    Справка: rsc help"

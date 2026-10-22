@@ -18,6 +18,13 @@
   listen: restart routerd
   when: routerd_start
 
+- name: Перезапустить routerd-web
+  ansible.builtin.systemd:
+    name: routerd-web.service
+    state: restarted
+  listen: restart routerd-web
+  when: routerd_start and _routerd_web_ui | bool
+
 # notify-reload: завершается, когда routerd применил конфиг и списки.
 - name: Перечитать конфиг routerd
   ansible.builtin.systemd:

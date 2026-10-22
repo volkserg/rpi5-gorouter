@@ -86,6 +86,11 @@ type Config struct {
 
 	// LocalClients — сервисы на самой RPi, которые работают как клиенты LAN.
 	LocalClients []LocalClient
+
+	// WebUI — включён веб-интерфейс (юнит routerd-web.service).
+	WebUI bool
+	// WebPort — порт HTTPS веб-интерфейса на RPI5_IP.
+	WebPort uint16
 }
 
 // LocalIfacePrefix — префикс имени veth локального сервиса на стороне RPi.
@@ -157,6 +162,8 @@ var defaults = map[string]string{
 	"PIHOLE_TOML":         "/etc/pihole/pihole.toml",
 	"DNSCRYPT_ADDR":       "127.0.0.1#5053",
 	"LOCAL_CLIENTS":       "",
+	"WEB_UI":              "no",
+	"WEB_PORT":            "8443",
 }
 
 // localNameRe — имя локального сервиса: rc-<имя> должно уложиться в 15 символов
@@ -325,6 +332,16 @@ func FromValues(values map[string]string) (*Config, error) {
 	} else {
 		cfg.LANSubnet = p
 	}
+	if b, err := parseBool(get("WEB_UI")); err != nil {
+		errs = append(errs, fmt.Errorf("WEB_UI: %w", err))
+	} else {
+		cfg.WebUI = b
+	}
+	if v, err := strconv.ParseUint(get("WEB_PORT"), 10, 16); err != nil || v == 0 {
+		errs = append(errs, fmt.Errorf("WEB_PORT=%q: ожидается порт 1–65535", get("WEB_PORT")))
+	} else {
+		cfg.WebPort = uint16(v)
+	}
 	locals, lerrs := parseLocalClients(get("LOCAL_CLIENTS"))
 	cfg.LocalClients = locals
 	errs = append(errs, lerrs...)
@@ -390,6 +407,12 @@ func (c *Config) Validate() error {
 		if c.InPool(h.a) {
 			fail("%s=%s попадает в пул DHCP %s - %s", h.key, h.a, c.PoolStart, c.PoolEnd)
 		}
+	}
+	// Порты, занятые на RPi: DNS и DHCP routerd, веб-интерфейс Pi-hole, GOST.
+	switch c.WebPort {
+	case 0: // Config собран не из router.conf
+	case 53, 67, 80, 443, c.VPNPort:
+		fail("WEB_PORT=%d: порт занят (DNS, DHCP, Pi-hole или VPN_PORT)", c.WebPort)
 	}
 	for i, l := range c.LocalClients {
 		if l.Net.Overlaps(p) {

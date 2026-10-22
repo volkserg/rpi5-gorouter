@@ -8,3 +8,5 @@ _routerd_archive_name: >-
 _routerd_dir: "{{ routerd_cache_dir }}/{{ _routerd_archive_name | regex_replace('\\.tar\\.gz$', '') }}"
 _routerd_release_url: "{{ routerd_release_base }}/v{{ routerd_version }}"
 _routerd_ctl_names: [rsc, router_service_ctl]
+# Веб-интерфейс включён (WEB_UI в routerd_conf: yes/true/1/on).
+_routerd_web_ui: "{{ (routerd_conf.WEB_UI | default('no') | string | lower) in ['yes', 'true', '1', 'on'] }}"

@@ -16,6 +16,9 @@ Restart=on-failure
 RestartSec=3
 # /var/lib/routerd — аренды DHCP (leases.json).
 StateDirectory=routerd
+# /run/routerd/api.sock — API для веб-интерфейса (группа routerd-web).
+RuntimeDirectory=routerd
+RuntimeDirectoryMode=0755
 # Сверка ключей цепочки DNS в pihole.toml (PIHOLE_MANAGE).
 ReadWritePaths=-/etc/pihole
 

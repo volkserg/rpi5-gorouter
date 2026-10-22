@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#000000">
+  <title>routerd</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/base.css">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="halo" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+        <path class="mark-ring" d="M16 3 L27 8 V16 C27 22.5 22.4 27.4 16 29 C9.6 27.4 5 22.5 5 16 V8 Z"/>
+        <path class="mark-path" d="M10 17 H14 L16 12 L18 21 L20 17 H23"/>
+      </svg>
+      <span class="brand-name">routerd</span>
+      <span class="brand-ver" id="version"></span>
+    </div>
+    <nav class="tabs" id="tabs" aria-label="Разделы">
+      <a class="tab" href="#overview" data-view="overview">Обзор</a>
+    </nav>
+    <div class="who">
+      <span class="who-name" id="user"></span>
+      <button class="btn ghost" id="logout" type="button">Выйти</button>
+    </div>
+  </header>
+
+  <div class="banner" id="banner" role="alert" hidden></div>
+
+  <main class="content">
+    <section class="view" id="view-overview" data-view="overview" hidden>
+      <div class="card scheme reveal" id="scheme">
+        <div class="card-head">
+          <h2>Маршрут трафика</h2>
+          <span class="pill" id="tunnel-pill"><i></i><span>…</span></span>
+        </div>
+
+        <svg class="flow flow-wide" viewBox="0 0 760 210" role="img" aria-labelledby="flow-title">
+          <title id="flow-title">Устройства LAN → routerd → туннель или напрямую → сеть назначения</title>
+          <path class="track" d="M160 105 H220"/>
+          <path class="track" d="M370 95 C405 95 405 47 440 47"/>
+          <path class="track" d="M580 47 C605 47 600 95 620 95"/>
+          <path class="track" d="M370 115 C420 115 420 172 470 172 H560 C600 172 600 115 620 115"/>
+          <path class="dots lan" d="M160 105 H220"/>
+          <path class="dots via-tunnel" d="M370 95 C405 95 405 47 440 47"/>
+          <path class="dots via-tunnel" d="M580 47 C605 47 600 95 620 95"/>
+          <path class="dots direct" d="M370 115 C420 115 420 172 470 172 H560 C600 172 600 115 620 115"/>
+          <text class="edge-label" x="515" y="196">напрямую</text>
+
+          <g class="node"><rect x="20" y="75" width="140" height="60" rx="12"/>
+            <text class="n-title" x="90" y="101">Устройства</text>
+            <text class="n-sub" x="90" y="120" data-bind="lan">LAN</text></g>
+          <g class="node core"><rect x="220" y="75" width="150" height="60" rx="12"/>
+            <text class="n-title" x="295" y="101">routerd</text>
+            <text class="n-sub" x="295" y="120" data-bind="rpi_ip">RPi</text></g>
+          <g class="node tunnel"><rect x="440" y="17" width="140" height="60" rx="12"/>
+            <text class="n-title" x="510" y="43">Туннель</text>
+            <text class="n-sub" x="510" y="62" data-bind="mode">режим</text></g>
+          <g class="node"><rect x="620" y="75" width="120" height="60" rx="12"/>
+            <text class="n-title" x="680" y="101">Сеть</text>
+            <text class="n-sub" x="680" y="120">назначения</text></g>
+        </svg>
+
+        <svg class="flow flow-tall" viewBox="0 0 340 410" role="img" aria-labelledby="flow-title-m">
+          <title id="flow-title-m">Устройства LAN → routerd → туннель или напрямую → сеть назначения</title>
+          <path class="track" d="M170 66 V110"/>
+          <path class="track" d="M150 166 C150 195 85 192 85 222"/>
+          <path class="track" d="M85 278 C85 310 150 306 150 340"/>
+          <path class="track" d="M190 166 C190 200 255 205 255 250 C255 296 190 305 190 340"/>
+          <path class="dots lan" d="M170 66 V110"/>
+          <path class="dots via-tunnel" d="M150 166 C150 195 85 192 85 222"/>
+          <path class="dots via-tunnel" d="M85 278 C85 310 150 306 150 340"/>
+          <path class="dots direct" d="M190 166 C190 200 255 205 255 250 C255 296 190 305 190 340"/>
+          <text class="edge-label" x="285" y="254">напрямую</text>
+
+          <g class="node"><rect x="100" y="8" width="140" height="58" rx="12"/>
+            <text class="n-title" x="170" y="33">Устройства</text>
+            <text class="n-sub" x="170" y="52" data-bind="lan">LAN</text></g>
+          <g class="node core"><rect x="95" y="110" width="150" height="56" rx="12"/>
+            <text class="n-title" x="170" y="134">routerd</text>
+            <text class="n-sub" x="170" y="153" data-bind="rpi_ip">RPi</text></g>
+          <g class="node tunnel"><rect x="20" y="222" width="130" height="56" rx="12"/>
+            <text class="n-title" x="85" y="246">Туннель</text>
+            <text class="n-sub" x="85" y="265" data-bind="mode">режим</text></g>
+          <g class="node"><rect x="100" y="340" width="140" height="58" rx="12"/>
+            <text class="n-title" x="170" y="365">Сеть</text>
+            <text class="n-sub" x="170" y="384">назначения</text></g>
+        </svg>
+
+        <p class="scheme-note" id="scheme-note"></p>
+      </div>
+
+      <div class="tiles">
+        <div class="card tile reveal"><span class="tile-num" data-count="domains">0</span><span class="tile-label">доменов в списке VPN</span></div>
+        <div class="card tile reveal"><span class="tile-num" data-count="nets">0</span><span class="tile-label">IP и подсетей</span></div>
+        <div class="card tile reveal"><span class="tile-num" data-count="overrides">0</span><span class="tile-label">правил DNS-override</span></div>
+        <div class="card tile reveal"><span class="tile-num" data-count="local_clients">0</span><span class="tile-label">локальных сервисов</span></div>
+      </div>
+
+      <div class="card reveal">
+        <div class="card-head"><h2>Параметры</h2></div>
+        <dl class="props">
+          <dt>Режим туннеля</dt><dd><b data-bind="mode">—</b> <span class="muted" data-bind="mode_text"></span></dd>
+          <dt>Туннель недоступен</dt><dd data-bind="failover_text">—</dd>
+          <dt>Адрес RPi</dt><dd class="mono" data-bind="rpi_ip">—</dd>
+          <dt>Сеть LAN</dt><dd class="mono" data-bind="lan">—</dd>
+          <dt>DHCP</dt><dd data-bind="dhcp_text">—</dd>
+          <dt>routerd работает</dt><dd data-bind="uptime">—</dd>
+          <dt>Версия</dt><dd class="mono" data-bind="version">—</dd>
+        </dl>
+      </div>
+    </section>
+  </main>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

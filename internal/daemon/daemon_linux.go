@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/netip"
 	"os"
 	"os/signal"
@@ -17,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -26,6 +28,7 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
+	"github.com/volkserg/rpi5-gorouter/internal/api"
 	"github.com/volkserg/rpi5-gorouter/internal/config"
 	"github.com/volkserg/rpi5-gorouter/internal/dhcp"
 	"github.com/volkserg/rpi5-gorouter/internal/dnsproxy"
@@ -51,6 +54,10 @@ type Options struct {
 	Log      *slog.Logger
 	// Services — systemd по D-Bus (перезапуск Pi-hole при правке его конфига).
 	Services func(context.Context) (services.Manager, error)
+	// Version — версия сборки (для API).
+	Version string
+	// APISocket — путь к сокету API (api.SocketPath()); пусто — без API.
+	APISocket string
 }
 
 type daemon struct {
@@ -79,6 +86,14 @@ type daemon struct {
 	// (0 — интерфейса нет): быстрый перезапуск GOST пересоздаёт tun с новым
 	// индексом, и маршрут в него, удалённый ядром вместе со старым, нужно вернуть.
 	tunIndex int
+	// counts — размеры списков после последнего apply (для API).
+	domains, nets, overrides int
+
+	started time.Time
+	// snap — состояние для API: обновляется в основном цикле, читается
+	// обработчиками API из других горутин.
+	snap   atomic.Pointer[api.Status]
+	apiSrv *http.Server
 }
 
 // Run работает до SIGTERM/SIGINT. Ошибка первого применения конфигурации
@@ -98,7 +113,7 @@ func Run(ctx context.Context, o Options) error {
 	if err != nil {
 		return fmt.Errorf("netlink nftables: %w", err)
 	}
-	d := &daemon{Options: o, nft: nft, nl: nl, dyn: dyn}
+	d := &daemon{Options: o, nft: nft, nl: nl, dyn: dyn, started: time.Now()}
 
 	sigs := make(chan os.Signal, 4)
 	signal.Notify(sigs, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT)
@@ -108,6 +123,7 @@ func Run(ctx context.Context, o Options) error {
 		d.cleanup()
 		return err
 	}
+	d.startAPI()
 	d.Log.Info("routerd запущен", "состояние", d.status())
 	notify("READY=1", "STATUS="+d.status())
 
@@ -222,12 +238,64 @@ func (d *daemon) apply() error {
 	go d.syncPihole(cfg)
 	d.cfg, d.spec, d.healthy, d.tunUp = cfg, spec, healthy, tunUp
 	d.tunIndex = d.tunLinkIndex(spec.Tun)
+	d.domains, d.nets, d.overrides = domains, len(static), len(overrides)
 	d.summary = fmt.Sprintf("доменов %d, IP/подсетей %d, DNS-override %d, режим %s",
 		domains, len(static), len(overrides), cfg.VPNMode)
 	if n := len(cfg.LocalClients); n > 0 {
 		d.summary += fmt.Sprintf(", локальных сервисов %d", n)
 	}
+	d.updateSnapshot()
 	return nil
+}
+
+// updateSnapshot публикует текущее состояние для API.
+func (d *daemon) updateSnapshot() {
+	failover := "closed"
+	if d.cfg.VPNFailoverOpen {
+		failover = "open"
+	}
+	d.snap.Store(&api.Status{
+		Version:      d.Version,
+		StartedAt:    d.started,
+		Mode:         d.cfg.VPNMode,
+		Failover:     failover,
+		TunnelUp:     d.healthy,
+		Bypass:       d.spec.Bypass,
+		Domains:      d.domains,
+		Nets:         d.nets,
+		Overrides:    d.overrides,
+		LocalClients: len(d.cfg.LocalClients),
+		DHCP:         d.cfg.DHCPEnabled,
+		RPiIP:        d.cfg.RPi5IP.String(),
+		LAN:          d.cfg.LANSubnet.String(),
+	})
+}
+
+// Status — состояние для API (api.Backend).
+func (d *daemon) Status() api.Status {
+	if s := d.snap.Load(); s != nil {
+		return *s
+	}
+	return api.Status{Version: d.Version, StartedAt: d.started}
+}
+
+// startAPI открывает сокет API. Ошибка не фатальна: шлюз работает и без
+// веб-интерфейса.
+func (d *daemon) startAPI() {
+	if d.APISocket == "" {
+		return
+	}
+	l, err := api.Listen(d.APISocket)
+	if err != nil {
+		d.Log.Error("сокет API не открыт, веб-интерфейс недоступен", "сокет", d.APISocket, "ошибка", err)
+		return
+	}
+	d.apiSrv = &http.Server{Handler: api.Handler(d), ReadHeaderTimeout: 10 * time.Second}
+	go func() {
+		if err := d.apiSrv.Serve(l); err != nil && err != http.ErrServerClosed {
+			d.Log.Error("API", "ошибка", err)
+		}
+	}()
 }
 
 // applyRouting применяет policy routing; в режиме route для поднятого
@@ -304,6 +372,7 @@ func (d *daemon) tick() {
 		}
 	}
 	d.spec, d.healthy, d.tunUp, d.tunIndex = spec, healthy, up, tunIndex
+	d.updateSnapshot()
 	notify("STATUS=" + d.status())
 }
 
@@ -538,6 +607,9 @@ func waitDNS(ctx context.Context, server netip.AddrPort, limit time.Duration) {
 
 // cleanup останавливает DHCP и DNS и убирает правила routerd.
 func (d *daemon) cleanup() {
+	if d.apiSrv != nil {
+		_ = d.apiSrv.Close()
+	}
 	if d.dhcpSrv != nil {
 		_ = d.dhcpSrv.Close()
 	}

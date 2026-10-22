@@ -1,0 +1,216 @@
+/* Общие токены и элементы: страница входа и панель (стиль Nginx Shield). */
+:root {
+  --bg: #000;
+  --text: #e5e7eb;
+  --muted: #8b93a1;
+  --line: rgb(255 255 255 / 0.08);
+  --line-strong: rgb(255 255 255 / 0.14);
+  --field: rgb(255 255 255 / 0.04);
+  --accent: #60a5fa;
+  --accent-soft: rgb(96 165 250 / 0.12);
+  --accent-glow: rgb(96 165 250 / 0.35);
+  --warn: #fbbf24;
+  --error: #f87171;
+  --ok: #34d399;
+  --mono: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+html { background: var(--bg); }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow-x: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+[hidden] { display: none !important; }
+
+/* Мягкое «дыхание» подсветки за содержимым */
+.halo {
+  position: fixed;
+  left: 50%;
+  top: 28%;
+  width: 640px;
+  height: 640px;
+  margin: -320px 0 0 -320px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgb(96 165 250 / 0.16), rgb(96 165 250 / 0.05) 55%, transparent);
+  pointer-events: none;
+  z-index: 0;
+  animation: halo-in 1.6s ease-out both, breathe 6s ease-in-out 1.6s infinite;
+}
+
+.card {
+  position: relative;
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.05), rgb(255 255 255 / 0.02));
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: 0 30px 80px rgb(0 0 0 / 0.6), inset 0 1px 0 rgb(255 255 255 / 0.04);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+
+.card.shake { animation: shake 0.42s cubic-bezier(.36, .07, .19, .97); }
+
+.field { position: relative; display: block; }
+
+.field input {
+  width: 100%;
+  padding: 20px 14px 8px;
+  font: inherit;
+  color: var(--text);
+  background: var(--field);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  outline: none;
+  transition: border-color .2s, box-shadow .2s, background .2s;
+}
+
+.field input:focus {
+  border-color: rgb(96 165 250 / 0.6);
+  background: rgb(96 165 250 / 0.05);
+  box-shadow: 0 0 0 4px rgb(96 165 250 / 0.12), 0 0 24px rgb(96 165 250 / 0.12);
+}
+
+/* Подпись внутри поля, уезжает вверх при вводе */
+.field span {
+  position: absolute;
+  left: 15px;
+  top: 14px;
+  font-size: 15px;
+  color: var(--muted);
+  pointer-events: none;
+  transform-origin: left top;
+  transition: transform .18s ease, color .18s ease;
+}
+
+.field input:focus + span,
+.field input:not(:placeholder-shown) + span {
+  transform: translateY(-9px) scale(0.76);
+  color: var(--accent);
+}
+
+.field input:not(:focus):not(:placeholder-shown) + span { color: var(--muted); }
+
+/* Переключатель */
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 14px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.toggle input { position: absolute; opacity: 0; pointer-events: none; }
+
+.toggle .track {
+  flex: none;
+  position: relative;
+  width: 38px;
+  height: 22px;
+  border-radius: 11px;
+  background: var(--field);
+  border: 1px solid var(--line-strong);
+  transition: background .25s, border-color .25s, box-shadow .25s;
+}
+
+.toggle .track::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform .25s cubic-bezier(.3, 1.4, .5, 1), background .25s;
+}
+
+.toggle input:checked + .track {
+  background: rgb(96 165 250 / 0.22);
+  border-color: rgb(96 165 250 / 0.6);
+  box-shadow: 0 0 16px rgb(96 165 250 / 0.25);
+}
+
+.toggle input:checked + .track::after { transform: translateX(16px); background: var(--accent); }
+.toggle input:focus-visible + .track { outline: 2px solid #bfdbfe; outline-offset: 3px; }
+.toggle:hover { color: var(--text); }
+
+.error {
+  margin: -2px 0 0;
+  font-size: 13px;
+  color: var(--error);
+  animation: notice-in .25s ease-out both;
+}
+
+.btn {
+  position: relative;
+  padding: 13px;
+  font: inherit;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #0b1220;
+  background: linear-gradient(180deg, #93c5fd, var(--accent));
+  border: 0;
+  border-radius: 11px;
+  cursor: pointer;
+  box-shadow: 0 8px 28px rgb(96 165 250 / 0.28);
+  transition: transform .15s, box-shadow .2s, filter .2s;
+}
+
+.btn:hover { box-shadow: 0 10px 36px rgb(96 165 250 / 0.45); filter: brightness(1.06); }
+.btn:active { transform: translateY(1px); }
+.btn:focus-visible { outline: 2px solid #bfdbfe; outline-offset: 3px; }
+.btn:disabled { cursor: default; filter: saturate(.6) brightness(.85); }
+
+.btn.ghost {
+  padding: 8px 14px;
+  font-weight: 500;
+  color: var(--text);
+  background: var(--field);
+  border: 1px solid var(--line);
+  box-shadow: none;
+}
+
+.btn.ghost:hover { border-color: var(--line-strong); background: rgb(255 255 255 / 0.07); filter: none; }
+
+.btn.loading::after {
+  content: "";
+  position: absolute;
+  right: 16px;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  margin-top: -7px;
+  border: 2px solid rgb(11 18 32 / 0.35);
+  border-top-color: #0b1220;
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+
+code, .mono { font: var(--mono); }
+
+@keyframes halo-in { from { opacity: 0; transform: scale(.7); } }
+@keyframes breathe { 50% { opacity: .65; transform: scale(1.06); } }
+@keyframes rise { from { opacity: 0; transform: translateY(28px) scale(.98); filter: blur(4px); } }
+@keyframes notice-in { from { opacity: 0; transform: translateY(-6px); } }
+@keyframes blink { 50% { opacity: .35; } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes shake {
+  20%, 60% { transform: translateX(-8px); }
+  40%, 80% { transform: translateX(8px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
