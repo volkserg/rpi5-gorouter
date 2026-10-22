@@ -11,15 +11,15 @@ Ansible-коллекция с ролью `routerd`: установка и нас
 ```yaml
 collections:
   - name: git+https://github.com/volkserg/rpi5-gorouter.git#/ansible/rpi5_gorouter
-    version: v0.3.2
+    version: v0.4.0
 ```
 
 ```bash
 ansible-galaxy collection install -r requirements.yml
 ```
 
-Версия коллекции совпадает с версией routerd: тег `v0.3.2` даёт роль, которая
-по умолчанию ставит routerd из релиза `v0.3.2`.
+Версия коллекции совпадает с версией routerd: тег `v0.4.0` даёт роль, которая
+по умолчанию ставит routerd из релиза `v0.4.0`.
 
 ## Пример
 
@@ -45,6 +45,11 @@ routerd_conf:
   LAN_POOL_START: 192.168.3.100
   LAN_POOL_END: 192.168.3.250
   VPN_MODE: redirect
+  WEB_UI: true               # веб-интерфейс https://192.168.3.2:8443
+# Пользователи веб-интерфейса; пароль — из Ansible Vault.
+routerd_web_users:
+  - name: admin
+    password: "{{ vault_routerd_web_password }}"
 # Списки — готовыми файлами рядом с инвентарём (по записи на строку,
 # комментарии #)…
 routerd_vpn_file: "{{ inventory_dir }}/files/vpn_domains.txt"
@@ -82,13 +87,15 @@ ansible-playbook -i inventory.yml site.yml
 3. Скачивает архив routerd из релиза GitHub с проверкой sha256 (`SHA256SUMS`
    релиза) или берёт `routerd_archive` с машины Ansible; ставит бинарник,
    `rsc` и `router_service_ctl`, `routerd.service`, шаблон
-   `routerd-local@.service` (`LOCAL_CLIENTS`), автодополнение bash/zsh.
+   `routerd-local@.service` (`LOCAL_CLIENTS`), `routerd-web.service` и его
+   системного пользователя `routerd-web`, автодополнение bash/zsh.
 4. Пишет `router.conf` из `routerd_conf` и, если заданы, списки
    `vpn_domains.txt` и `dns_override.txt` (из файлов или записей). Каждый файл
    проверяется до записи (`rsc check-config --vpn-file …`): с ошибкой он на RPi
-   не попадёт.
-5. Включает в автозапуск и запускает dnscrypt-proxy, Pi-hole, routerd (после
-   отключения питания RPi поднимается сама). Изменение бинарника
+   не попадёт. Добавляет пользователей веб-интерфейса из `routerd_web_users`
+   (пароль меняется, только если он другой).
+5. Включает в автозапуск и запускает dnscrypt-proxy, Pi-hole, routerd и — при
+   `WEB_UI: true` — веб-интерфейс (после отключения питания RPi поднимается сама). Изменение бинарника
    или юнита — перезапуск routerd, изменение конфигов — перечитывание
    (`reload`, без перезапуска).
 6. Если адрес RPi в NetworkManager отличается от `router.conf`, применяет его
@@ -113,12 +120,14 @@ ansible-playbook -i inventory.yml site.yml
 | `routerd_dns_override_file` | `null` | файл `dns_override.txt` с машины Ansible |
 | `routerd_vpn_entries` | `null` | записи `vpn_domains.txt` в инвентаре (вместо файла) |
 | `routerd_dns_overrides` | `null` | записи `dns_override.txt` (`domain`, `server`) в инвентаре (вместо файла) |
-
-Список, не заданный ни файлом, ни записями, роль не трогает — его ведут на
-RPi командами `rsc add-vpn-domain`, `load-vpn-domains` и т.п.
+| `routerd_web_users` | `[]` | пользователи веб-интерфейса (`name`, `password`); остальных роль не трогает |
 | `routerd_install_deps` | `true` | ставить Pi-hole и dnscrypt-proxy |
 | `routerd_apply_network` | `true` | применять адрес RPi в NetworkManager |
 | `routerd_start` | `true` | включать и запускать сервисы |
+
+Список, не заданный ни файлом, ни записями, роль не трогает — его ведут на
+RPi командами `rsc add-vpn-domain`, `load-vpn-domains` и т.п. или в
+веб-интерфейсе.
 
 Типы проверяются по `meta/argument_specs.yml`.
 
