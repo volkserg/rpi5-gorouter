@@ -167,7 +167,8 @@ func TestRouterdKeys(t *testing.T) {
 		cfg.FilterAAAA != FilterAAAAVPN || !cfg.DNSECS ||
 		!cfg.DHCPEnabled || cfg.DHCPLeaseTime != 24*time.Hour || cfg.LocalDomain != "lan" ||
 		!cfg.PiholeManage || cfg.PiholeTOML != "/etc/pihole/pihole.toml" || cfg.DNSCryptAddr.String() != "127.0.0.1:5053" ||
-		cfg.WebUI || cfg.WebPort != 8443 || cfg.AccessHistory != 7*24*time.Hour || cfg.AccessTracking() {
+		cfg.WebUI || cfg.WebPort != 8443 || cfg.AccessHistory != 7*24*time.Hour || cfg.AccessTracking() ||
+		cfg.TunnelCheckURL != "https://api.ipify.org" {
 		t.Errorf("дефолты: %+v", cfg)
 	}
 	cfg, err = FromValues(map[string]string{"VPN_PORT": "12345", "QUIC_REJECT": "no",
@@ -200,6 +201,7 @@ func TestRouterdKeys(t *testing.T) {
 		"WEB_PORT=VPN_PORT":  {"WEB_PORT": "1080"},
 		"история 91 сутки":   {"ACCESS_HISTORY_DAYS": "91"},
 		"история -1":         {"ACCESS_HISTORY_DAYS": "-1"},
+		"проверка не URL":    {"TUNNEL_CHECK_URL": "api.example"},
 	} {
 		if _, err := FromValues(v); err == nil {
 			t.Errorf("%s: ожидалась ошибка", name)

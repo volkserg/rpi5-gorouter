@@ -111,7 +111,10 @@
   var views = {};
   var current = null;
 
-  function show(name) {
+  // show — раздел по адресу «#имя?параметры» (параметры получает enter).
+  function show(hash) {
+    var parts = (hash || '').split('?');
+    var name = parts[0], params = new URLSearchParams(parts[1] || '');
     if (!views[name]) name = 'overview';
     document.querySelectorAll('.tab').forEach(function (t) {
       t.classList.toggle('active', t.getAttribute('data-view') === name);
@@ -131,7 +134,7 @@
     });
     if (current && views[current].leave) views[current].leave();
     current = name;
-    if (views[name].enter) views[name].enter();
+    if (views[name].enter) views[name].enter(params);
   }
 
   // --- Обзор -----------------------------------------------------------------
@@ -201,16 +204,109 @@
       api('GET', '/api/v1/status').then(render, offline);
     }
 
+    // --- Сервисы ---
+    var unitsBox = document.getElementById('units'), unitsShown = false;
+    var UNIT_STATE = {
+      active: function (u) { return u.sub === 'exited' ? 'выполнен' : 'работает'; },
+      activating: function () { return 'запускается'; },
+      reloading: function () { return 'перечитывает'; },
+      deactivating: function () { return 'останавливается'; },
+      failed: function () { return 'ошибка'; },
+      inactive: function () { return 'остановлен'; }
+    };
+    function loadUnits() {
+      api('GET', '/api/v1/services').then(function (us) {
+        unitsBox.textContent = '';
+        us.forEach(function (u, i) {
+          var li = el('li');
+          if (!unitsShown) li.style.setProperty('--n', i); else li.style.animation = 'none';
+          var cls = !u.installed ? 'off' : u.active === 'active' ? 'ok' : u.active === 'failed' ? 'bad' :
+            u.active === 'inactive' ? 'off' : 'warn';
+          li.appendChild(el('span', 'dot ' + cls));
+          var n = el('span', 'unit-name', u.label);
+          n.appendChild(el('small', '', u.unit));
+          li.appendChild(n);
+          li.appendChild(el('span', 'state', !u.installed ? 'не установлен' :
+            (UNIT_STATE[u.active] ? UNIT_STATE[u.active](u) : u.active)));
+          unitsBox.appendChild(li);
+        });
+        unitsShown = true;
+      }, function (err) {
+        unitsBox.textContent = '';
+        unitsBox.appendChild(el('li', 'state', err.message));
+      });
+    }
+
+    // --- Внешний адрес ---
+    var exitCard = document.getElementById('exit-card');
+    var exitBtn = document.getElementById('exit-run');
+    var exitNote = document.getElementById('exit-note');
+    var EXIT_STALE = 10 * 60 * 1000;
+    function exitPath(id, ip, p) {
+      var box = document.getElementById(id);
+      var ipEl = box.querySelector('.exit-ip'), msEl = box.querySelector('.exit-ms');
+      ipEl.className = 'exit-ip mono';
+      if (p.ok) {
+        ipEl.textContent = ip;
+        msEl.textContent = p.total_ms + ' мс';
+        msEl.title = 'соединение ' + p.connect_ms + ' мс, ответ ' + p.total_ms + ' мс';
+      } else {
+        ipEl.className = 'exit-ip bad';
+        ipEl.textContent = p.error || 'нет данных';
+        msEl.textContent = '';
+      }
+      box.classList.remove('fresh');
+      void box.offsetWidth;
+      box.classList.add('fresh');
+    }
+    function showExit(t) {
+      if (!t.enabled) {
+        exitCard.hidden = true;
+        return null;
+      }
+      exitCard.hidden = false;
+      var when = t.checked_at && new Date(t.checked_at);
+      if (!when || when.getFullYear() < 2000) {
+        exitNote.textContent = 'Ещё не проверялся.';
+        return null;
+      }
+      exitPath('exit-direct', t.direct_ip, t.direct);
+      exitPath('exit-tunnel', t.tunnel_ip, t.tunnel);
+      var same = t.direct_ip && t.tunnel_ip && t.direct_ip === t.tunnel_ip;
+      exitNote.textContent = (same ? 'Внимание: адреса совпадают — трафик через туннель выходит тем же адресом. ' : '') +
+        'Проверено ' + ago(when.getTime() / 1000) + ' через ' + t.url + '.';
+      return when;
+    }
+    function runExit() {
+      exitBtn.disabled = true;
+      exitCard.classList.add('running');
+      api('POST', '/api/v1/tunnel').then(showExit, function (err) { toast(err.message, 'bad'); })
+        .then(function () { exitBtn.disabled = false; exitCard.classList.remove('running'); });
+    }
+    exitBtn.addEventListener('click', runExit);
+    function loadExit() {
+      api('GET', '/api/v1/tunnel').then(function (t) {
+        var when = showExit(t);
+        // Сам — не чаще раза в 10 минут; по кнопке — когда угодно.
+        if (t.enabled && (!when || Date.now() - when.getTime() > EXIT_STALE)) runExit();
+      }, function () {});
+    }
+
+    var unitsTimer = null;
     return {
       enter: function () {
         load();
+        loadUnits();
+        loadExit();
         timer = setInterval(load, POLL_MS);
+        unitsTimer = setInterval(loadUnits, 15000);
         uptimeTimer = setInterval(function () {
           if (started) bind(root, { uptime: duration(Date.now() - started) });
         }, 1000);
       },
       leave: function () {
         clearInterval(timer);
+        clearInterval(unitsTimer);
         clearInterval(uptimeTimer);
       }
     };
@@ -532,6 +628,10 @@
         f.appendChild(el('span', 'chip', c.devices + ' ' + plural(c.devices, 'устройство', 'устройства', 'устройств')));
         f.appendChild(el('span', 'chip', ago(c.last)));
         li.appendChild(f);
+        var chk = el('a', 'btn ghost tiny', 'Проверить');
+        chk.href = '#check?target=' + encodeURIComponent(c.resource);
+        chk.title = 'Проверить доступность напрямую и через туннель';
+        li.appendChild(chk);
         var b = el('button', 'btn tiny', 'В VPN');
         b.type = 'button';
         b.addEventListener('click', function () {
@@ -603,7 +703,358 @@
     }, function () {});
 
     return {
-      enter: function () { prev = null; load(true); timer = setInterval(poll, ACCESS_POLL_MS); },
+      enter: function (params) {
+        if (params && params.has('device')) {
+          q.device = params.get('device');
+          var o = devSel.querySelector('option[value="' + CSS.escape(q.device) + '"]');
+          if (!o) { o = el('option', '', params.get('name') || q.device); o.value = q.device; devSel.appendChild(o); }
+          devSel.value = q.device;
+        }
+        prev = null;
+        load(true);
+        timer = setInterval(poll, ACCESS_POLL_MS);
+      },
+      leave: function () { clearInterval(timer); }
+    };
+  })();
+
+  // --- Проверка ресурса ---------------------------------------------------------
+
+  views.check = (function () {
+    var form = document.getElementById('check-form');
+    var card = document.getElementById('check-result');
+    var portOther = document.getElementById('check-port-other');
+    var recentBox = document.getElementById('check-recent');
+    var port = 443, recent = [];
+    var OK_ICON = '<svg viewBox="0 0 20 20"><path d="M4 10.5 L8.5 15 L16 6"/></svg>';
+    var BAD_ICON = '<svg viewBox="0 0 20 20"><path d="M5 5 L15 15 M15 5 L5 15"/></svg>';
+
+    segmented(document.getElementById('check-port'), 'data-port', function (v) {
+      portOther.hidden = v !== 'other';
+      if (v === 'other') { portOther.querySelector('input').focus(); return; }
+      port = Number(v);
+    });
+
+    function pathPanel(id, p, running) {
+      var box = document.getElementById(id);
+      var body = box.querySelector('.path-body');
+      var denied = p && p.kind === 'http';
+      box.className = 'path' + (id === 'path-tunnel' ? ' tunnel' : '') +
+        (running ? ' running' : (p.ok ? ' ok' : (denied ? ' warn' : ' bad')));
+      body.textContent = '';
+      if (running) {
+        body.appendChild(el('span', 'wait', 'Соединение…'));
+        return;
+      }
+      var st = el('div', 'status');
+      var icon = el('span', 'badge-icon');
+      icon.innerHTML = p.ok ? OK_ICON : BAD_ICON;
+      st.appendChild(icon);
+      var tx = el('div', 'status-text');
+      tx.appendChild(el('b', '', p.ok ? 'Доступен' : (denied ? 'Отказ в доступе' : 'Недоступен')));
+      tx.appendChild(el('span', '', p.ok ? (p.detail || '') : (p.error || '')));
+      st.appendChild(tx);
+      body.appendChild(st);
+      if (p.ok || p.connect_ms) {
+        var t = el('div', 'timing');
+        var max = Math.max(p.total_ms, 1);
+        [['соединение', p.connect_ms], [port === 443 ? 'с TLS' : 'ответ', p.total_ms]].forEach(function (r) {
+          if (!r[1]) return;
+          var row = el('div', 'timing-row');
+          row.appendChild(el('span', '', r[0]));
+          var bar = el('div', 'bar'), fill = el('span');
+          fill.style.width = Math.max(4, r[1] * 100 / max) + '%';
+          bar.appendChild(fill);
+          row.appendChild(bar);
+          row.appendChild(el('span', 'num', r[1] + ' мс'));
+          t.appendChild(row);
+        });
+        body.appendChild(t);
+      }
+    }
+
+    function verdict(r) {
+      var v = document.getElementById('check-verdict');
+      v.textContent = '';
+      v.className = 'verdict';
+      var d = r.direct.ok, t = r.tunnel.ok, tunnelDown = r.tunnel.error === 'туннель недоступен';
+      var dDenied = r.direct.kind === 'http', tDenied = r.tunnel.kind === 'http';
+      if (dDenied && tDenied) {
+        v.classList.add('warn');
+        v.textContent = 'Сервер отказывает обоими путями (HTTP ' + r.direct.status + ' и ' + r.tunnel.status + '). ' +
+          'Так часто отвечают на запросы не из браузера, поэтому по этой проверке нельзя судить, доступен ли ресурс по адресу.';
+      } else if (!d && t && !r.in_list) {
+        v.classList.add('warn');
+        v.appendChild(document.createTextNode(dDenied
+          ? 'Напрямую сервер отказывает в доступе (HTTP ' + r.direct.status + '), через туннель — отвечает. Похоже на ограничение по адресу: ресурс стоит добавить в список VPN.'
+          : 'Напрямую ресурс недоступен, через туннель — доступен. Его стоит добавить в список VPN.'));
+        if (r.suggest && r.suggest.length) {
+          var ch = chooser(r.suggest, function () { ch.remove(); run(r.target, r.port); }, function () { ch.remove(); });
+          v.appendChild(ch);
+        }
+      } else if (!d && t) {
+        v.classList.add('good');
+        v.textContent = 'Напрямую недоступен, но ресурс в списке VPN (запись ' + (r.list_entry || '—') + ') — устройства получают его через туннель.';
+      } else if (d && t) {
+        v.classList.add('good');
+        v.textContent = 'Доступен обоими путями.' + (r.in_list ? ' Ресурс в списке VPN (запись ' + (r.list_entry || '—') + '), хотя доступен и напрямую.' : '');
+      } else if (d && !t) {
+        v.classList.add(r.in_list ? 'bad' : 'warn');
+        v.textContent = (tunnelDown ? 'Туннель сейчас недоступен.' : 'Через туннель ресурс недоступен.') +
+          (r.in_list ? ' Ресурс в списке VPN — устройства сейчас не получат к нему доступ.' : ' Напрямую доступен.');
+      } else {
+        v.classList.add('bad');
+        v.textContent = 'Недоступен обоими путями: возможно, ресурс не работает, неверен адрес или порт.';
+      }
+    }
+
+    function remember(target, p, r) {
+      recent = recent.filter(function (x) { return !(x.target === target && x.port === p); });
+      recent.unshift({ target: target, port: p, cls: r.direct.ok && r.tunnel.ok ? 'ok' : (r.direct.ok || r.tunnel.ok ? 'warn' : 'bad') });
+      recent = recent.slice(0, 8);
+      recentBox.textContent = '';
+      recent.forEach(function (x) {
+        var b = el('button', x.cls, x.target + (x.port !== 443 ? ':' + x.port : ''));
+        b.type = 'button';
+        b.addEventListener('click', function () { form.target.value = x.target; run(x.target, x.port); });
+        recentBox.appendChild(b);
+      });
+    }
+
+    function run(target, p) {
+      var btn = form.querySelector('.btn');
+      btn.disabled = true;
+      btn.classList.add('loading');
+      card.hidden = false;
+      card.style.animation = 'none';
+      void card.offsetWidth;
+      card.style.animation = '';
+      document.getElementById('check-title').textContent = target;
+      document.getElementById('check-addrs').textContent = 'Проверка…';
+      document.getElementById('check-list').hidden = true;
+      document.getElementById('check-verdict').textContent = '';
+      pathPanel('path-direct', null, true);
+      pathPanel('path-tunnel', null, true);
+      api('POST', '/api/v1/check', { target: target, port: p }).then(function (r) {
+        document.getElementById('check-title').textContent = r.target + (r.port !== 443 ? ':' + r.port : '');
+        var pill = document.getElementById('check-list');
+        pill.hidden = false;
+        pill.className = 'pill' + (r.in_list ? ' ok' : '');
+        pill.lastElementChild.textContent = r.in_list ? 'в списке VPN' + (r.list_entry && r.list_entry !== r.target ? ' · ' + r.list_entry : '') : 'не в списке VPN';
+        document.getElementById('check-addrs').textContent = (r.name ? 'Адрес ' + r.addrs.join(', ') + '. ' : '') +
+          'Устройства LAN сейчас идут к нему ' + (r.route === 'tunnel' ? 'через туннель.' : 'напрямую.');
+        pathPanel('path-direct', r.direct);
+        pathPanel('path-tunnel', r.tunnel);
+        verdict(r);
+        remember(r.target, r.port, r);
+      }, function (err) {
+        card.hidden = true;
+        toast(err.message, 'bad');
+        shake(form.closest('.card'));
+      }).then(function () {
+        btn.disabled = false;
+        btn.classList.remove('loading');
+      });
+    }
+
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var t = form.target.value.trim();
+      if (!t) { shake(form.closest('.card')); return; }
+      var p = port;
+      if (!portOther.hidden) {
+        p = Number(portOther.querySelector('input').value);
+        if (!(p >= 1 && p <= 65535)) { toast('Порт: от 1 до 65535', 'bad'); return; }
+      }
+      run(t, p);
+    });
+
+    return {
+      enter: function (params) {
+        if (params && params.get('target')) {
+          form.target.value = params.get('target');
+          run(params.get('target'), port);
+        } else {
+          form.target.focus({ preventScroll: true });
+        }
+      }
+    };
+  })();
+
+  // --- Устройства ---------------------------------------------------------------
+
+  views.devices = (function () {
+    var grid = document.getElementById('dev-grid');
+    var ICONS = {
+      local: '<svg viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="9" rx="2"/><path d="M7 16 H13 M10 13 V16"/></svg>',
+      lease: '<svg viewBox="0 0 20 20"><rect x="6" y="2.5" width="8" height="15" rx="2"/><path d="M9 14.5 H11"/></svg>',
+      seen: '<svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7"/><path d="M3 10 H17 M10 3 C7.5 6 7.5 14 10 17 M10 3 C12.5 6 12.5 14 10 17"/></svg>'
+    };
+    var KIND = { local: 'сервис RPi', lease: 'DHCP', seen: 'без аренды' };
+
+    function card(d, i) {
+      var a = el('a', 'dev-card' + (d.active ? '' : ' inactive'));
+      a.href = '#access?device=' + encodeURIComponent(d.key) + '&name=' + encodeURIComponent(d.name);
+      a.style.setProperty('--n', i);
+      var head = el('div', 'dev-head');
+      var icon = el('span', 'dev-icon');
+      icon.innerHTML = ICONS[d.kind] || ICONS.seen;
+      head.appendChild(icon);
+      var title = el('div', 'dev-title');
+      title.appendChild(el('b', '', d.name));
+      var sub = KIND[d.kind] || '';
+      if (d.kind === 'lease') sub += d.active ? ' · аренда до ' + new Date(d.expires).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : ' · аренда истекла';
+      title.appendChild(el('span', '', sub));
+      head.appendChild(title);
+      a.appendChild(head);
+      var meta = el('dl', 'dev-meta');
+      [['IP', d.ip], ['MAC', d.mac], ['имя', d.hostname && d.hostname !== d.name ? d.hostname : '']].forEach(function (p) {
+        if (!p[1]) return;
+        meta.appendChild(el('dt', '', p[0]));
+        meta.appendChild(el('dd', '', p[1]));
+      });
+      a.appendChild(meta);
+      var stats = el('div', 'dev-stats');
+      stats.appendChild(el('span', 'chip', d.connections ? 'обращений ' + d.connections : 'обращений нет'));
+      if (d.problems) stats.appendChild(el('span', 'chip chip-bad', 'проблем ' + d.problems));
+      if (d.last) stats.appendChild(el('span', 'chip', ago(d.last)));
+      a.appendChild(stats);
+      a.appendChild(el('span', 'dev-go', 'обращения →'));
+      return a;
+    }
+
+    function load() {
+      api('GET', '/api/v1/devices').then(function (ds) {
+        ds.sort(function (a, b) {
+          if (a.active !== b.active) return a.active ? -1 : 1;
+          return (b.connections - a.connections) || a.name.localeCompare(b.name);
+        });
+        grid.textContent = '';
+        ds.forEach(function (d, i) { grid.appendChild(card(d, i)); });
+        var active = ds.filter(function (d) { return d.active; }).length;
+        document.getElementById('dev-count').lastElementChild.textContent = 'активных ' + active + ' из ' + ds.length;
+      }, function (err) { toast(err.message, 'bad'); });
+    }
+    return { enter: load };
+  })();
+
+  // --- Журнал -------------------------------------------------------------------
+
+  views.journal = (function () {
+    var box = document.getElementById('log');
+    var live = document.getElementById('log-live');
+    var pauseBtn = document.getElementById('log-pause');
+    var search = document.getElementById('log-search');
+    var unit = 'routerd', level = 7, cursor = '', timer = null, paused = false, entries = [], busy = false;
+    var MAX = 1500;
+    var LVL = { 0: 'err', 1: 'err', 2: 'err', 3: 'err', 4: 'warn', 5: 'info', 6: 'info', 7: 'dbg' };
+    var LVL_TEXT = { err: 'ERR', warn: 'WARN', info: 'INFO', dbg: 'DBG' };
+
+    // Строка slog: level=… msg="…" ключ=значение — уровень, сообщение и пары.
+    function parse(e) {
+      var m = e.message, out = { lvl: LVL[e.priority] || 'info', msg: m, kv: [] };
+      var re = /(\S+?)=("(?:[^"\\]|\\.)*"|\S+)/g, mm, found = false, rest = [];
+      while ((mm = re.exec(m)) !== null) {
+        found = true;
+        var k = mm[1].replace(/^"|"$/g, ''), v = mm[2];
+        if (v[0] === '"') { try { v = JSON.parse(v); } catch (x) { v = v.slice(1, -1); } }
+        if (k === 'level') out.lvl = { ERROR: 'err', WARN: 'warn', INFO: 'info', DEBUG: 'dbg' }[v] || out.lvl;
+        else if (k === 'msg') out.msg = v;
+        else rest.push([k, v]);
+      }
+      if (found && /^level=/.test(m)) out.kv = rest; else out.msg = m;
+      return out;
+    }
+
+    function mark(parent, text, q) {
+      var i = q ? text.toLowerCase().indexOf(q) : -1;
+      if (i < 0) { parent.appendChild(document.createTextNode(text)); return; }
+      parent.appendChild(document.createTextNode(text.slice(0, i)));
+      parent.appendChild(el('mark', '', text.slice(i, i + q.length)));
+      parent.appendChild(document.createTextNode(text.slice(i + q.length)));
+    }
+
+    function lineEl(e, fresh) {
+      var p = e.parsed || (e.parsed = parse(e));
+      var row = el('div', 'log-line ' + p.lvl + (fresh ? ' new' : ''));
+      var d = new Date(e.time);
+      row.appendChild(el('span', 't', d.toLocaleTimeString('ru-RU')));
+      row.appendChild(el('span', 'lvl ' + p.lvl, LVL_TEXT[p.lvl]));
+      var msg = el('span', 'msg');
+      var q = search.value.trim().toLowerCase();
+      mark(msg, p.msg, q);
+      p.kv.forEach(function (kv) {
+        msg.appendChild(document.createTextNode(' '));
+        var c = el('span', 'kv');
+        c.appendChild(el('b', '', kv[0]));
+        c.appendChild(document.createTextNode('='));
+        mark(c, String(kv[1]), q);
+        msg.appendChild(c);
+      });
+      row.title = d.toLocaleString('ru-RU');
+      return row;
+    }
+
+    function visible(e) {
+      var p = e.parsed || (e.parsed = parse(e));
+      if (level < 7 && !(p.lvl === 'warn' || p.lvl === 'err')) return false;
+      var q = search.value.trim().toLowerCase();
+      return !q || e.message.toLowerCase().indexOf(q) >= 0;
+    }
+
+    function atBottom() { return box.scrollHeight - box.scrollTop - box.clientHeight < 40; }
+
+    function render() {
+      var frag = document.createDocumentFragment();
+      entries.filter(visible).forEach(function (e) { frag.appendChild(lineEl(e, false)); });
+      box.textContent = '';
+      box.appendChild(frag);
+      box.scrollTop = box.scrollHeight;
+    }
+
+    function append(list) {
+      var stick = atBottom();
+      list.forEach(function (e) {
+        entries.push(e);
+        if (visible(e)) box.appendChild(lineEl(e, true));
+      });
+      if (entries.length > MAX) {
+        entries = entries.slice(-MAX);
+        render();
+        return;
+      }
+      if (stick) box.scrollTop = box.scrollHeight;
+    }
+
+    function fetchNew(reset) {
+      if (busy) return;
+      busy = true;
+      var u = '/api/v1/journal?unit=' + unit + (cursor && !reset ? '&cursor=' + encodeURIComponent(cursor) : '&lines=300');
+      api('GET', u).then(function (j) {
+        if (reset) { entries = []; box.textContent = ''; }
+        cursor = j.cursor;
+        if (reset) { entries = j.entries; render(); } else if (j.entries.length) append(j.entries);
+      }, function (err) { toast(err.message, 'bad'); }).then(function () { busy = false; });
+    }
+
+    function poll() {
+      if (paused || document.hidden) return;
+      fetchNew(false);
+    }
+
+    segmented(document.getElementById('log-unit'), 'data-unit', function (u) { unit = u; cursor = ''; fetchNew(true); });
+    segmented(document.getElementById('log-level'), 'data-level', function (l) { level = Number(l); render(); });
+    var st = null;
+    search.addEventListener('input', function () { clearTimeout(st); st = setTimeout(render, 200); });
+    pauseBtn.addEventListener('click', function () {
+      paused = !paused;
+      pauseBtn.textContent = paused ? 'Продолжить' : 'Пауза';
+      live.classList.toggle('paused', paused);
+      if (!paused) fetchNew(false);
+    });
+
+    return {
+      enter: function () { fetchNew(!cursor); timer = setInterval(poll, 3000); },
       leave: function () { clearInterval(timer); }
     };
   })();

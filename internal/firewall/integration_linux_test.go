@@ -95,6 +95,9 @@ func TestApplyRedirectMode(t *testing.T) {
 	if strings.Contains(out, "10.20.5.0/24") {
 		t.Error("вложенная подсеть должна слиться с 10.20.0.0/16")
 	}
+	// Пробные соединения routerd (SO_MARK 0x53) — на слушатель туннеля.
+	mustContain(t, run("nft", "list", "chain", "ip", TableName, chainOutputNAT),
+		"type nat hook output priority dstnat", "meta mark 0x00000053 meta l4proto tcp counter", "redirect to :1080")
 }
 
 func TestReapplyKeepsDynamic(t *testing.T) {
@@ -113,9 +116,10 @@ func TestReapplyKeepsDynamic(t *testing.T) {
 	if strings.Contains(out, "10.20.0.0/16") {
 		t.Error("старые статические записи должны быть заменены")
 	}
-	// Правила не дублируются при повторном применении.
-	if n := strings.Count(out, "redirect to :1080"); n != 2 {
-		t.Errorf("правил redirect: %d, want 2", n)
+	// Правила не дублируются при повторном применении: два для LAN
+	// (vpn_static, vpn_dynamic) и одно для пробных соединений routerd.
+	if n := strings.Count(out, "redirect to :1080"); n != 3 {
+		t.Errorf("правил redirect: %d, want 3", n)
 	}
 }
 
@@ -186,6 +190,10 @@ func TestApplyTProxyMode(t *testing.T) {
 	if out := run("nft", "list", "chain", "ip", TableName, chainPrerouting); strings.Contains(out, "redirect") {
 		t.Errorf("в режиме tproxy redirect не нужен:\n%s", out)
 	}
+	// Пробные соединения: метка маршрутизации в output, перехват из lo.
+	mustContain(t, out, `iifname "lo" meta mark 0x00000052 meta l4proto tcp counter`)
+	mustContain(t, run("nft", "list", "chain", "ip", TableName, chainOutput),
+		"type route hook output priority mangle", "meta mark 0x00000053 meta l4proto tcp counter", "meta mark set 0x00000052")
 }
 
 func TestApplyRouteMode(t *testing.T) {
@@ -201,6 +209,8 @@ func TestApplyRouteMode(t *testing.T) {
 		`iifname "eth0" ct mark 0x00000052 meta mark set 0x00000052`,
 		`oifname "tun0" tcp flags syn tcp option maxseg size set rt mtu`,
 		`udp dport 443 ip daddr @vpn_dynamic counter`,
+		// Пробные соединения routerd — по метке маршрутизации в tun.
+		"meta mark 0x00000053 meta l4proto tcp counter", "meta mark set 0x00000052",
 	)
 	if strings.Contains(out, "redirect") || strings.Contains(out, "tproxy") {
 		t.Errorf("в режиме route нет redirect/tproxy:\n%s", out)
@@ -216,7 +226,7 @@ func TestBypass(t *testing.T) {
 			t.Fatal(mode, err)
 		}
 		out := run("nft", "list", "table", "ip", TableName)
-		for _, banned := range []string{"redirect", "tproxy", "ct mark set"} {
+		for _, banned := range []string{"redirect", "tproxy", "ct mark set", "0x00000053"} {
 			if strings.Contains(out, banned) {
 				t.Errorf("%s, перехват снят, но есть %q:\n%s", mode, banned, out)
 			}

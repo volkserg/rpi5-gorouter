@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -94,6 +95,9 @@ type Config struct {
 	// AccessHistory — сколько хранить историю обращений устройств; 0 —
 	// обращения не учитываются. Учёт работает только с веб-интерфейсом.
 	AccessHistory time.Duration
+	// TunnelCheckURL — адрес, отвечающий внешним IP запрашивающего (проверка
+	// выхода туннеля в веб-интерфейсе); пусто — проверки нет.
+	TunnelCheckURL string
 }
 
 // AccessTracking — учитывать ли обращения устройств (страница «Обращения»).
@@ -172,6 +176,7 @@ var defaults = map[string]string{
 	"WEB_PORT":            "8443",
 	// Сутки истории обращений устройств; 0 — не учитывать.
 	"ACCESS_HISTORY_DAYS": "7",
+	"TUNNEL_CHECK_URL":    "https://api.ipify.org",
 }
 
 // localNameRe — имя локального сервиса: rc-<имя> должно уложиться в 15 символов
@@ -354,6 +359,12 @@ func FromValues(values map[string]string) (*Config, error) {
 		errs = append(errs, fmt.Errorf("ACCESS_HISTORY_DAYS=%q: ожидается число суток от 0 до 90", get("ACCESS_HISTORY_DAYS")))
 	} else {
 		cfg.AccessHistory = time.Duration(v) * 24 * time.Hour
+	}
+	cfg.TunnelCheckURL = get("TUNNEL_CHECK_URL")
+	if cfg.TunnelCheckURL == "none" {
+		cfg.TunnelCheckURL = ""
+	} else if u, err := url.Parse(cfg.TunnelCheckURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		errs = append(errs, fmt.Errorf("TUNNEL_CHECK_URL=%q: ожидается адрес http(s)://… или none", cfg.TunnelCheckURL))
 	}
 	locals, lerrs := parseLocalClients(get("LOCAL_CLIENTS"))
 	cfg.LocalClients = locals

@@ -13,6 +13,7 @@ import (
 )
 
 type fakeBackend struct {
+	Tools   // методы проверок в этих тестах не вызываются
 	st      Status
 	applied []string
 	err     error

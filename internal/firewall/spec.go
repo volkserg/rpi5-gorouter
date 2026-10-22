@@ -23,12 +23,18 @@ const (
 	chainPostroute  = "postrouting_nat"
 	chainForward    = "forward_filter"
 	chainMangle     = "prerouting_mangle"
+	chainOutputNAT  = "output_nat"
+	chainOutput     = "output_route"
 
 	// Mark — fwmark пакетов, идущих в туннель (режимы tproxy и route);
 	// по нему policy routing выбирает таблицу RouteTable.
 	Mark = 0x52
 	// RouteTable — таблица маршрутизации routerd.
 	RouteTable = 152
+	// ProbeMark — SO_MARK пробных соединений самого routerd (проверка
+	// туннеля и ресурса): их TCP идёт в туннель, как трафик устройств LAN.
+	// Собственный трафик RPi правила LAN не затрагивают.
+	ProbeMark = 0x53
 )
 
 // Mode — способ отправки трафика к адресам из списков в туннель.

@@ -112,7 +112,11 @@ func build(c *nftables.Conn, s Spec) {
 	policy := nftables.ChainPolicyAccept
 	fwd := c.AddChain(&nftables.Chain{Name: chainForward, Table: t, Type: nftables.ChainTypeFilter,
 		Hooknum: nftables.ChainHookForward, Priority: nftables.ChainPriorityFilter, Policy: &policy})
-	for _, ch := range []*nftables.Chain{pre, mangle, post, fwd} {
+	outNAT := c.AddChain(&nftables.Chain{Name: chainOutputNAT, Table: t, Type: nftables.ChainTypeNAT,
+		Hooknum: nftables.ChainHookOutput, Priority: nftables.ChainPriorityNATDest})
+	out := c.AddChain(&nftables.Chain{Name: chainOutput, Table: t, Type: nftables.ChainTypeRoute,
+		Hooknum: nftables.ChainHookOutput, Priority: nftables.ChainPriorityMangle})
+	for _, ch := range []*nftables.Chain{pre, mangle, post, fwd, outNAT, out} {
 		c.FlushChain(ch)
 	}
 	rule := func(ch *nftables.Chain, parts ...[]expr.Any) {
@@ -133,9 +137,15 @@ func build(c *nftables.Conn, s Spec) {
 						counter(), redirectTo(s.RedirectPort))
 				}
 			}
+			// Пробные соединения routerd — на тот же слушатель.
+			rule(outNAT, markIs(ProbeMark), l4proto(unix.IPPROTO_TCP), counter(), redirectTo(s.RedirectPort))
 		case ModeTProxy:
 			// Пакеты уже перехваченных соединений (сокет слушателя прозрачный).
 			rule(mangle, l4proto(unix.IPPROTO_TCP), socketTransparent(), setMark(Mark), verdict(expr.VerdictAccept))
+			// Пробные соединения routerd: перемаршрутизированы в lo (output_route
+			// ниже) и перехватываются так же, как трафик LAN.
+			rule(mangle, ifaceIn("lo"), markIs(Mark), l4proto(unix.IPPROTO_TCP),
+				counter(), tproxyTo(s.RedirectPort), setMark(Mark), verdict(expr.VerdictAccept))
 			for _, in := range ins {
 				if s.QUICReject {
 					// QUIC не перехватываем — его отклонит forward-цепочка ниже.
@@ -169,6 +179,13 @@ func build(c *nftables.Conn, s Spec) {
 				// и с fwmark они ушли бы обратно в туннель.
 				rule(mangle, ifaceIn(in), ctMarkIs(Mark), setMark(Mark))
 			}
+		}
+		if s.Mode == ModeTProxy || s.Mode == ModeRoute {
+			// Пробные соединения routerd: метка маршрутизации — ядро заново
+			// выбирает маршрут по таблице RouteTable (route — tun, tproxy — lo).
+			// Адрес источника уже выбран по основной таблице (адрес LAN): в
+			// route его заменит masquerade, в tproxy ответ придёт на него.
+			rule(out, markIs(ProbeMark), l4proto(unix.IPPROTO_TCP), counter(), setMark(Mark))
 		}
 	}
 
@@ -308,6 +325,13 @@ func setMark(m uint32) []expr.Any {
 	return []expr.Any{
 		&expr.Immediate{Register: 1, Data: binaryutil.NativeEndian.PutUint32(m)},
 		&expr.Meta{Key: expr.MetaKeyMARK, SourceRegister: true, Register: 1},
+	}
+}
+
+func markIs(m uint32) []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(m)},
 	}
 }
 

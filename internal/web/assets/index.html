@@ -25,8 +25,11 @@
     <nav class="tabs" id="tabs" aria-label="Разделы">
       <a class="tab" href="#overview" data-view="overview">Обзор</a>
       <a class="tab" href="#access" data-view="access">Обращения</a>
+      <a class="tab" href="#check" data-view="check">Проверка</a>
+      <a class="tab" href="#devices" data-view="devices">Устройства</a>
       <a class="tab" href="#vpn" data-view="vpn">Список VPN</a>
       <a class="tab" href="#dns" data-view="dns">DNS override</a>
+      <a class="tab" href="#journal" data-view="journal">Журнал</a>
     </nav>
     <div class="who">
       <span class="who-name" id="user"></span>
@@ -97,6 +100,32 @@
         </svg>
 
         <p class="scheme-note" id="scheme-note"></p>
+      </div>
+
+      <div class="duo">
+        <div class="card reveal">
+          <div class="card-head"><h2>Сервисы</h2></div>
+          <ul class="units" id="units"></ul>
+        </div>
+        <div class="card reveal exit-card" id="exit-card">
+          <div class="card-head">
+            <h2>Внешний адрес</h2>
+            <button class="btn ghost small" type="button" id="exit-run">Проверить</button>
+          </div>
+          <div class="exit-paths">
+            <div class="exit-path" id="exit-direct">
+              <span class="exit-label">Напрямую</span>
+              <span class="exit-ip mono">—</span>
+              <span class="exit-ms"></span>
+            </div>
+            <div class="exit-path tunnel" id="exit-tunnel">
+              <span class="exit-label">Через туннель</span>
+              <span class="exit-ip mono">—</span>
+              <span class="exit-ms"></span>
+            </div>
+          </div>
+          <p class="hint exit-note" id="exit-note"></p>
+        </div>
       </div>
 
       <div class="tiles">
@@ -187,6 +216,84 @@
         </div>
         <p class="list-foot" id="acc-foot"></p>
         <button class="btn ghost" type="button" id="acc-more" hidden>Показать ещё</button>
+      </div>
+    </section>
+
+    <section class="view" id="view-check" data-view="check" hidden>
+      <div class="card reveal">
+        <div class="card-head"><h2>Проверка ресурса</h2></div>
+        <p class="hint">RPi соединится с ресурсом сама — напрямую и через туннель — и покажет, каким путём он доступен.
+          Для порта 443 проверяется и TLS-рукопожатие: так видно и соединения, которые обрываются после начала TLS.</p>
+        <form class="add-row" id="check-form" autocomplete="off" novalidate>
+          <label class="field grow">
+            <input name="target" placeholder=" " spellcheck="false" autocapitalize="none" required>
+            <span>Домен, IPv4-адрес или ссылка</span>
+          </label>
+          <button class="btn" type="submit">Проверить</button>
+        </form>
+        <div class="check-opts">
+          <div class="segmented" id="check-port" role="radiogroup" aria-label="Порт">
+            <button type="button" role="radio" aria-checked="true" data-port="443">443 · HTTPS</button>
+            <button type="button" role="radio" aria-checked="false" data-port="80">80 · HTTP</button>
+            <button type="button" role="radio" aria-checked="false" data-port="other">другой</button>
+          </div>
+          <label class="port-input" id="check-port-other" hidden>
+            <input type="number" min="1" max="65535" placeholder="порт" aria-label="Порт">
+          </label>
+        </div>
+        <div class="recent" id="check-recent"></div>
+      </div>
+
+      <div class="card check-result" id="check-result" hidden>
+        <div class="card-head">
+          <h2 class="mono" id="check-title"></h2>
+          <span class="pill" id="check-list"><i></i><span></span></span>
+        </div>
+        <p class="hint" id="check-addrs"></p>
+        <div class="paths">
+          <div class="path" id="path-direct"><h3>Напрямую</h3><div class="path-body"></div></div>
+          <div class="path tunnel" id="path-tunnel"><h3>Через туннель</h3><div class="path-body"></div></div>
+        </div>
+        <div class="verdict" id="check-verdict"></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-devices" data-view="devices" hidden>
+      <div class="card reveal">
+        <div class="card-head">
+          <h2>Устройства</h2>
+          <span class="pill" id="dev-count"><span>…</span></span>
+        </div>
+        <p class="hint">Аренды DHCP, сервисы на RPi и адреса без аренды, замеченные в обращениях. Цифры — за последние 24 часа.</p>
+        <div class="dev-grid" id="dev-grid"></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-journal" data-view="journal" hidden>
+      <div class="card reveal">
+        <div class="card-head">
+          <h2>Журнал</h2>
+          <span class="live" id="log-live" title="Новые записи появляются сами"><i></i>в реальном времени</span>
+        </div>
+        <div class="access-tools">
+          <div class="segmented" id="log-unit" role="radiogroup" aria-label="Сервис">
+            <button type="button" role="radio" aria-checked="true" data-unit="routerd">routerd</button>
+            <button type="button" role="radio" aria-checked="false" data-unit="web">веб-интерфейс</button>
+            <button type="button" role="radio" aria-checked="false" data-unit="tunnel">туннель</button>
+            <button type="button" role="radio" aria-checked="false" data-unit="pihole">Pi-hole</button>
+            <button type="button" role="radio" aria-checked="false" data-unit="dnscrypt">dnscrypt</button>
+          </div>
+          <div class="segmented" id="log-level" role="radiogroup" aria-label="Уровень">
+            <button type="button" role="radio" aria-checked="true" data-level="7">все</button>
+            <button type="button" role="radio" aria-checked="false" data-level="4">предупреждения</button>
+          </div>
+          <label class="search">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="6"/><path d="M14 14 L18 18"/></svg>
+            <input type="search" id="log-search" placeholder="Поиск в журнале" spellcheck="false" autocapitalize="none">
+          </label>
+          <button class="btn ghost small" type="button" id="log-pause">Пауза</button>
+        </div>
+        <div class="log" id="log" role="log" aria-live="off"></div>
       </div>
     </section>
 

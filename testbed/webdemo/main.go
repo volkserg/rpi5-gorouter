@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -61,7 +62,11 @@ type fake struct {
 	started time.Time
 	phase   int
 	tracker *access.Tracker
+	tunnel  api.TunnelCheck
 }
+
+func parseInt(s string) (int, error) { return strconv.Atoi(s) }
+func itoa(n int) string              { return strconv.Itoa(n) }
 
 func (f *fake) Access(q access.Query) (access.Result, bool) { return f.tracker.Query(q), true }
 

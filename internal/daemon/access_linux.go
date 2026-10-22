@@ -38,6 +38,8 @@ type netView struct {
 	static []netip.Prefix
 	vpn    *domain.Matcher[struct{}]
 	pool   *dhcp.Pool
+	// cfg — router.conf последнего применения (не меняется после публикации).
+	cfg *config.Config
 }
 
 // syncAccess включает или выключает учёт обращений по router.conf.

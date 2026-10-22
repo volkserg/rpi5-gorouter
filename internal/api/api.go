@@ -71,6 +71,7 @@ type Backend interface {
 	Apply(user, what string) error
 	// Access — выборка из истории обращений; false — учёт выключен.
 	Access(q access.Query) (access.Result, bool)
+	Tools
 }
 
 // Error — тело ответа с ошибкой.
@@ -94,6 +95,7 @@ func Handler(b Backend, configDir string) http.Handler {
 	mux.HandleFunc("PUT /v1/overrides", l.saveOverrides)
 	mux.HandleFunc("GET /v1/overrides/file", l.file(l.overridePath(), lists.OverrideFileName))
 	mux.HandleFunc("GET /v1/access", func(w http.ResponseWriter, r *http.Request) { accessQuery(w, r, b) })
+	toolRoutes(mux, b)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusNotFound, Error{"нет такого метода API: " + r.Method + " " + r.URL.Path})
 	})

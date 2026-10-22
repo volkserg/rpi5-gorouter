@@ -104,6 +104,8 @@ type daemon struct {
 	accessStop func()
 	view       atomic.Pointer[netView]
 	vpnMatch   *domain.Matcher[struct{}]
+	// tunCheck — последняя проверка внешнего IP (tools_linux.go).
+	tunCheck tunnelChecks
 }
 
 type applyRequest struct {
@@ -293,6 +295,7 @@ func (d *daemon) updateSnapshot() {
 	d.view.Store(&netView{
 		lan: d.cfg.LANSubnet, rpi: d.cfg.RPi5IP, locals: d.cfg.LocalClients,
 		mode: d.spec.Mode, bypass: d.spec.Bypass, static: d.spec.Static, vpn: d.vpnMatch, pool: d.pool,
+		cfg: d.cfg,
 	})
 	d.snap.Store(&api.Status{
 		Version:      d.Version,
@@ -580,7 +583,7 @@ func (d *daemon) syncDHCP(cfg *config.Config) error {
 func (d *daemon) syncPihole(cfg *config.Config) {
 	d.piholeMu.Lock()
 	defer d.piholeMu.Unlock()
-	if !cfg.PiholeManage || !cfg.DNSUpstream.Addr().IsLoopback() || d.Services == nil {
+	if !cfg.PiholeManage || !cfg.DNSUpstream.Addr().IsLoopback() || d.Options.Services == nil {
 		return
 	}
 	if _, err := os.Stat(cfg.PiholeTOML); err != nil {
@@ -611,7 +614,7 @@ func (d *daemon) syncPihole(cfg *config.Config) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	m, err := d.Services(ctx)
+	m, err := d.Options.Services(ctx)
 	if err != nil {
 		d.Log.Warn("правка конфига Pi-hole: systemd", "ошибка", err)
 		return

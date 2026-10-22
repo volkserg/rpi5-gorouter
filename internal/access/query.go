@@ -74,6 +74,7 @@ type DeviceInfo struct {
 	Device
 	Connections uint64 `json:"connections"`
 	Problems    uint64 `json:"problems"`
+	Last        int64  `json:"last"`
 }
 
 // candidateMin — сколько таймаутов нужно, чтобы ресурс стал кандидатом.
@@ -106,6 +107,7 @@ func (t *Tracker) Query(q Query) Result {
 		}
 		ds.Connections += total
 		ds.Problems += problems
+		ds.Last = max(ds.Last, r.Last)
 
 		entry, inList := t.o.InList(nameOf(k.Resource), r.IP)
 		if k.Route == Direct && r.Timeout > 0 && !inList {

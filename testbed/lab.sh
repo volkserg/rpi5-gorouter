@@ -377,11 +377,11 @@ selftest() {
 }
 
 # Вспомогательные юниты стенда (сервисы «интернета» и удалённых узлов).
-LAB_UNITS=(lab-dns-public lab-dohd lab-dns-corp lab-dns-vpn lab-web-direct lab-web-vpn
+LAB_UNITS=(lab-dns-public lab-dohd lab-dns-corp lab-dns-vpn lab-web-direct lab-web-vpn lab-web-geo
     lab-nginx-entry lab-gost-entry lab-nginx-exit lab-gost-exit)
 # Юниты стенда: управляемые routerd (имена как на бою) и вспомогательные.
 STAND_UNITS=(routerd-web lab-local-app routerd-local@lab-app gost-run routerd pihole-FTL dnscrypt-proxy dnscrypt-proxy.socket
-    lab-dns-corp lab-dns-vpn lab-dns-public lab-dohd lab-web-direct lab-web-vpn
+    lab-dns-corp lab-dns-vpn lab-dns-public lab-dohd lab-web-direct lab-web-vpn lab-web-geo
     lab-nginx-entry lab-gost-entry lab-nginx-exit lab-gost-exit)
 
 cmd_down() {
@@ -639,8 +639,16 @@ UNIT
     mkdir -p "${SRV_DIR}/direct" "${SRV_DIR}/vpn"
     echo "direct-site" >"${SRV_DIR}/direct/index.html"
     echo "vpn-site" >"${SRV_DIR}/vpn/index.html"
+    # Внешний адрес запрашивающего (TUNNEL_CHECK_URL стенда).
+    mkdir -p "${SRV_DIR}/vpn/cgi-bin"
+    printf '#!/bin/sh\nprintf "Content-Type: text/plain\\r\\n\\r\\n%%s\\n" "$REMOTE_ADDR"\n' >"${SRV_DIR}/vpn/cgi-bin/ip"
+    chmod 0755 "${SRV_DIR}/vpn/cgi-bin/ip"
     unit lab-web-direct inet "/bin/busybox httpd -f -vv -p 203.0.113.10:80 -h ${SRV_DIR}/direct"
     unit lab-web-vpn inet "/bin/busybox httpd -f -vv -p 203.0.113.20:80 -h ${SRV_DIR}/vpn"
+    # Тот же сайт на :8080 отказывает (403) адресу WAN роутера и отвечает
+    # выходу туннеля — как ресурс с ограничением по адресу клиента.
+    echo "D:198.51.100.2" >"${SRV_DIR}/geo-httpd.conf"
+    unit lab-web-geo inet "/bin/busybox httpd -f -vv -p 203.0.113.20:8080 -h ${SRV_DIR}/vpn -c ${SRV_DIR}/geo-httpd.conf"
 
     # Удалённые узлы туннеля.
     install_node entry
@@ -903,6 +911,8 @@ cert_has_rpi_ip() {
     nsx client openssl s_client -connect 192.168.3.2:8443 </dev/null 2>/dev/null |
         openssl x509 -noout -ext subjectAltName | grep -q 'IP Address:192.168.3.2'
 }
+# api_sock <параметры curl…> <путь> — запрос к API routerd через его сокет (root).
+api_sock() { curl -s --max-time 30 --unix-socket /run/routerd/api.sock "${@:1:$#-1}" "http://routerd${!#}"; }
 eq_ui_status() { [[ "$(ui /dev/null "${WEB_URL}/api/v1/status")" == "$1" ]]; }
 # Обращения за час через веб-интерфейс (файл ответа — в WEB_TMP).
 acc_fetch() { ui "${WEB_TMP}/acc" "${WEB_URL}/api/v1/access?hours=1" >/dev/null; }
@@ -913,6 +923,7 @@ acc_grew() { [[ "$(acc_sum "$1" "$2" "$3")" -gt "$4" ]]; }
 acc_has_device() { acc_py 'sys.exit(0 if any(x["name"]==sys.argv[1] for x in d["devices"]) else 1)' "$1"; }
 acc_in_list() { acc_py 'sys.exit(0 if any(r["in_list"] for r in d["rows"] if r["resource"]==sys.argv[1]) else 1)' "$1"; }
 acc_list_entry() { acc_py 'sys.exit(0 if any(r.get("list_entry")==sys.argv[2] for r in d["rows"] if r["resource"]==sys.argv[1]) else 1)' "$1" "$2"; }
+ui_grep() { ui "${WEB_TMP}/g" "${WEB_URL}$1" >/dev/null && grep -q "$2" "${WEB_TMP}/g"; }
 acc_candidate() { acc_py 'sys.exit(0 if any(c["resource"]==sys.argv[1] for c in d["candidates"]) else 1)' "$1"; }
 acc_status_on() { ui "${WEB_TMP}/st" "${WEB_URL}/api/v1/status" >/dev/null && grep -q '"access":true' "${WEB_TMP}/st"; }
 # ui_json <файл ответа> <метод> <путь> <JSON>; ui_text — тело текстом; ui_file <файл ответа> <параметры импорта> <файл>.
@@ -1072,6 +1083,23 @@ cmd_test() {
     expect "  … и снова идёт напрямую (недоступен)" not cached_ok direct.example 203.0.113.10
     expect "адрес vpn.example (в списке) не тронут" set_has vpn_dynamic 203.0.113.20
     direct_block off
+
+    log_info "Проверки самого routerd (веб-интерфейс): внешний адрес и ресурс"
+    local tc rc
+    tc="$(api_sock -X POST /v1/tunnel)"
+    expect "внешний IP напрямую — WAN роутера 198.51.100.2" grep -q '"direct_ip":"198.51.100.2"' <<<"${tc}"
+    expect "внешний IP через туннель — выходной узел 198.51.100.6" grep -q '"tunnel_ip":"198.51.100.6"' <<<"${tc}"
+    direct_block on
+    rc="$(api_sock -X POST -H 'Content-Type: application/json' --data '{"target":"direct.example","port":80}' /v1/check)"
+    expect "проверка direct.example: напрямую — таймаут" grep -q '"direct":{"ok":false,"kind":"timeout"' <<<"${rc}"
+    expect "  … через туннель — доступен" grep -q '"tunnel":{"ok":true' <<<"${rc}"
+    direct_block off
+    rc="$(api_sock -X POST -H 'Content-Type: application/json' --data '{"target":"vpn.example","port":80}' /v1/check)"
+    expect "проверка vpn.example: в списке, оба пути доступны" \
+        grep -q '"in_list":true,"list_entry":"vpn.example".*"direct":{"ok":true.*"tunnel":{"ok":true' <<<"${rc}"
+    rc="$(api_sock -X POST -H 'Content-Type: application/json' --data '{"target":"vpn.example","port":8080}' /v1/check)"
+    expect "проверка :8080: напрямую — отказ в доступе (HTTP 403)" grep -q '"direct":{"ok":false,"kind":"http","status":403' <<<"${rc}"
+    expect "  … через туннель — HTTP 200" grep -q '"tunnel":{"ok":true,"status":200' <<<"${rc}"
 
     log_info "VPN_FAILOVER"
     systemctl stop gost-run
@@ -1655,6 +1683,12 @@ cmd_test_web() {
         ctl remove-vpn-ip 203.0.113.10 >/dev/null
     fi
     b_ok="$(acc_sum direct.example direct ok)"
+
+    log_info "Сервисы, устройства, журнал"
+    expect "сервисы: routerd работает" ui_grep /api/v1/services '"unit":"routerd.service","label":"routerd","installed":true,"active":"active"'
+    expect "устройства: labclient (аренда DHCP)" ui_grep /api/v1/devices '"name":"labclient"'
+    expect "журнал routerd: есть записи" ui_grep '/api/v1/journal?unit=routerd&lines=50' '"message":"level=INFO'
+    expect "журнал неизвестного сервиса — 400" eq "$(ui /dev/null "${WEB_URL}/api/v1/journal?unit=sshd")" 400
 
     log_info "routerd остановлен и снова запущен"
     systemctl stop routerd

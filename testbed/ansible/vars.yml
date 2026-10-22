@@ -19,6 +19,7 @@ routerd_conf:
   # Два сервиса — значение с пробелом (роль должна закавычить).
   LOCAL_CLIENTS: "lab-app:10.99.0.0/30 lab-app2:10.99.0.4/30"
   WEB_UI: true
+  TUNNEL_CHECK_URL: http://203.0.113.20/cgi-bin/ip
 # Учётная запись веб-интерфейса только для стенда (как LAB_WEB_PASS в lab.sh).
 routerd_web_users:
   - name: admin
