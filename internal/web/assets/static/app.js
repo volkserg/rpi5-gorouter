@@ -268,6 +268,346 @@
 
   var TRASH = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6 H16 M8 6 V4 H12 V6 M6 6 L7 17 H13 L14 6"/></svg>';
 
+  // --- Обращения -------------------------------------------------------------
+
+  function ago(unix) {
+    var s = Math.max(0, Math.floor(Date.now() / 1000 - unix));
+    if (s < 60) return 'только что';
+    if (s < 3600) return Math.floor(s / 60) + ' мин назад';
+    if (s < 86400) return Math.floor(s / 3600) + ' ч назад';
+    var d = new Date(unix * 1000);
+    return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' }) + ' ' +
+      d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function size(n) {
+    if (!n) return '';
+    var u = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'], i = 0;
+    while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+    return (i ? n.toFixed(n < 10 ? 1 : 0) : n) + ' ' + u[i];
+  }
+
+  // addToVPN — выбор записи (домен или родительский домен) и добавление в список.
+  function chooser(options, onDone, onCancel) {
+    var box = el('div', 'chooser');
+    box.appendChild(el('span', 'label', 'В список VPN:'));
+    var seg = el('div', 'segmented');
+    seg.setAttribute('role', 'radiogroup');
+    var chosen = options[options.length > 1 ? 1 : 0];
+    options.forEach(function (o) {
+      var b = el('button', '', o);
+      b.type = 'button';
+      b.setAttribute('role', 'radio');
+      b.setAttribute('data-v', o);
+      b.setAttribute('aria-checked', o === chosen ? 'true' : 'false');
+      seg.appendChild(b);
+    });
+    segmented(seg, 'data-v', function (v) { chosen = v; });
+    box.appendChild(seg);
+    var add = el('button', 'btn tiny', 'Добавить');
+    add.type = 'button';
+    var cancel = el('button', 'btn ghost tiny', 'Отмена');
+    cancel.type = 'button';
+    box.appendChild(add);
+    box.appendChild(cancel);
+    cancel.addEventListener('click', onCancel);
+    add.addEventListener('click', function () {
+      add.disabled = true;
+      add.classList.add('loading');
+      api('POST', '/api/v1/vpn', { value: chosen }).then(function (c) {
+        toast(c.changed ? c.entry.value + ' добавлен в список VPN — новые соединения пойдут через туннель'
+          : c.entry.value + ' уже в списке', 'ok');
+        onDone();
+      }, function (err) {
+        add.disabled = false;
+        add.classList.remove('loading');
+        toast(err.message, 'bad');
+      });
+    });
+    return box;
+  }
+
+  var ACCESS_POLL_MS = 10000, ACCESS_PAGE = 300;
+
+  views.access = (function () {
+    var rowsBox = document.getElementById('acc-rows');
+    var foot = document.getElementById('acc-foot');
+    var more = document.getElementById('acc-more');
+    var live = document.getElementById('access-live');
+    var devSel = document.getElementById('acc-device');
+    var search = document.getElementById('acc-search');
+    var q = { hours: 24, device: '', route: '', status: '', q: '' };
+    var timer = null, shown = ACCESS_PAGE, prev = null, data = null, open = 0, searchT = null;
+
+    rowsBox.setAttribute('data-empty', 'Загрузка…');
+
+    function key(r) { return r.device + '|' + r.resource + '|' + r.route; }
+    function sig(r) { return [r.ok, r.timeout, r.refused, r.nodata, r.last, r.in_list].join(','); }
+
+    function names() {
+      var m = {};
+      (data.devices || []).forEach(function (d) { m[d.key] = d; });
+      return m;
+    }
+
+    function fillDevices() {
+      var cur = devSel.value;
+      devSel.textContent = '';
+      var all = el('option', '', 'Все устройства');
+      all.value = '';
+      devSel.appendChild(all);
+      data.devices.forEach(function (d) {
+        var o = el('option', '', d.name + (d.problems ? ' · проблем ' + d.problems : ''));
+        o.value = d.key;
+        devSel.appendChild(o);
+      });
+      devSel.value = cur;
+    }
+
+    function summary(t) {
+      var box = document.getElementById('acc-summary');
+      box.textContent = '';
+      function chip(cls, label, value) {
+        var c = el('span', 'chip ' + cls);
+        c.appendChild(document.createTextNode(label + ' '));
+        c.appendChild(el('b', '', value));
+        box.appendChild(c);
+      }
+      var pct = function (n) { return t.connections ? Math.round(n * 100 / t.connections) + '%' : '—'; };
+      chip('', 'обращений', t.connections);
+      chip('chip-ok', 'успешных', pct(t.ok));
+      chip(t.problems ? 'chip-bad' : '', 'проблем', t.problems);
+      chip('', 'через туннель', pct(t.tunnel));
+    }
+
+    function outcome(r) {
+      var box = el('div', 'outcome');
+      var total = r.ok + r.timeout + r.refused + r.nodata || 1;
+      var bar = el('div', 'bar');
+      [['ok', r.ok], ['to', r.timeout], ['rf', r.refused], ['nd', r.nodata]].forEach(function (p) {
+        if (!p[1]) return;
+        var s = el('span', p[0]);
+        s.style.width = (p[1] * 100 / total) + '%';
+        bar.appendChild(s);
+      });
+      bar.title = 'успешно ' + r.ok + ', таймаут ' + r.timeout + ', отказ ' + r.refused + ', без данных ' + r.nodata;
+      box.appendChild(bar);
+      var c = el('div', 'counts');
+      c.appendChild(document.createTextNode('✓ ' + r.ok));
+      if (r.timeout) c.appendChild(el('span', 'to', '  ⏱ ' + r.timeout));
+      if (r.refused) c.appendChild(el('span', 'rf', '  ⊘ ' + r.refused));
+      if (r.nodata) c.appendChild(el('span', 'nd', '  ∅ ' + r.nodata));
+      box.appendChild(c);
+      return box;
+    }
+
+    function rowEl(r, n, devs, changed) {
+      var problem = r.timeout + r.refused + r.nodata > 0;
+      var row = el('div', 'acc-row' + (problem ? ' problem' : '') + (changed ? ' changed' : ''));
+      row.setAttribute('role', 'row');
+      row.style.setProperty('--n', n);
+      var res = el('div', 'res');
+      res.appendChild(el('span', 'name', r.resource));
+      var meta = [];
+      if (r.ip && r.ip !== r.resource) meta.push(r.ip);
+      if (r.ports && r.ports.length) meta.push(r.proto + ' ' + r.ports.join(', '));
+      if (r.bytes) meta.push(size(r.bytes));
+      res.appendChild(el('span', 'meta', meta.join(' · ')));
+      res.title = r.resource;
+      row.appendChild(res);
+      var d = devs[r.device] || { name: r.device, ip: '' };
+      var dev = el('div', 'dev', d.name);
+      if (d.ip && d.ip !== d.name) dev.appendChild(el('span', 'ip', d.ip));
+      row.appendChild(dev);
+      row.appendChild(el('span', 'route ' + r.route, r.route === 'tunnel' ? 'туннель' : 'напрямую'));
+      row.appendChild(outcome(r));
+      row.appendChild(el('span', 'ago', ago(r.last)));
+      var act = el('div', 'act');
+      if (r.in_list) {
+        var badge = el('span', 'in-list', 'в списке VPN');
+        if (r.list_entry && r.list_entry !== r.resource) badge.title = 'по записи ' + r.list_entry;
+        act.appendChild(badge);
+        if (r.list_entry) act.appendChild(unlistButton(r.list_entry));
+      } else if (r.route === 'direct' && r.timeout > 0) {
+        var b = el('button', 'btn tiny', 'В VPN');
+        b.type = 'button';
+        b.addEventListener('click', function () {
+          if (row.nextElementSibling && row.nextElementSibling.classList.contains('chooser')) return;
+          open++;
+          var ch = chooser(suggest(r.resource), function () { open--; ch.remove(); load(true); },
+            function () { open--; ch.remove(); });
+          row.after(ch);
+        });
+        act.appendChild(b);
+      }
+      row.appendChild(act);
+      return row;
+    }
+
+    // unlistButton — неприметное «×»: первый щелчок — «убрать запись?»,
+    // второй (в течение 4 с) — удаление записи из списка VPN.
+    var CROSS = '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2 L8 8 M8 2 L2 8"/></svg>';
+
+    function unlistButton(entry) {
+      var b = el('button', 'unlist');
+      b.innerHTML = CROSS;
+      b.type = 'button';
+      b.title = 'Убрать ' + entry + ' из списка VPN';
+      b.setAttribute('aria-label', b.title);
+      var t = null;
+      function reset() {
+        if (!b.classList.contains('confirm')) return;
+        b.classList.remove('confirm');
+        b.innerHTML = CROSS;
+        open--;
+      }
+      b.addEventListener('click', function () {
+        if (!b.classList.contains('confirm')) {
+          b.classList.add('confirm');
+          b.textContent = 'убрать ' + entry + '?';
+          open++;
+          t = setTimeout(reset, 4000);
+          return;
+        }
+        clearTimeout(t);
+        b.disabled = true;
+        api('DELETE', '/api/v1/vpn?value=' + encodeURIComponent(entry)).then(function (c) {
+          reset();
+          toast(c.changed ? entry + ' убран из списка VPN — новые соединения пойдут напрямую'
+            : entry + ' уже нет в списке', 'ok');
+          load(false);
+        }, function (err) {
+          reset();
+          b.disabled = false;
+          toast(err.message, 'bad');
+        });
+      });
+      return b;
+    }
+
+    // Как access.Suggest: домен и родительские домены, без зоны верхнего уровня.
+    function suggest(res) {
+      if (/^[0-9.]+$/.test(res)) return [res];
+      var l = res.split('.'), min = 2, out = [];
+      if (l.length >= 3 && l[l.length - 1].length === 2 && l[l.length - 2].length <= 3) min = 3;
+      for (var i = 0; l.length - i >= min; i++) out.push(l.slice(i).join('.'));
+      return out.length ? out : [res];
+    }
+
+    function renderRows(animate) {
+      var devs = names();
+      var frag = document.createDocumentFragment();
+      var next = {};
+      data.rows.slice(0, shown).forEach(function (r, i) {
+        var k = key(r);
+        next[k] = sig(r);
+        var changed = prev && prev[k] !== next[k];
+        frag.appendChild(rowEl(r, i, devs, changed && !animate));
+      });
+      // Обновления без повторной анимации появления строк.
+      rowsBox.classList.toggle('quiet', !animate);
+      rowsBox.textContent = '';
+      rowsBox.appendChild(frag);
+      prev = next;
+      rowsBox.setAttribute('data-empty', 'За этот период обращений нет' + (q.q || q.device || q.route || q.status ? ' (с этими фильтрами)' : ''));
+      more.hidden = data.rows.length <= shown;
+      foot.textContent = data.truncated ? 'Показаны последние ' + data.rows.length + ' строк — уточните фильтры' :
+        (data.rows.length > shown ? 'Показано ' + shown + ' из ' + data.rows.length : '');
+    }
+
+    function renderCands() {
+      var card = document.getElementById('cand-card');
+      var ul = document.getElementById('cands');
+      card.hidden = !data.candidates.length;
+      document.getElementById('cand-count').lastElementChild.textContent = data.candidates.length;
+      if (ul.querySelector('.chooser')) return;
+      ul.textContent = '';
+      data.candidates.forEach(function (c, i) {
+        var li = el('li', 'cand');
+        li.style.setProperty('--n', i);
+        li.appendChild(el('span', 'name', c.resource));
+        var f = el('span', 'facts');
+        f.appendChild(el('span', 'chip chip-bad', 'таймаутов ' + c.timeout));
+        if (c.ok) f.appendChild(el('span', 'chip chip-ok', 'успешных ' + c.ok));
+        f.appendChild(el('span', 'chip', c.devices + ' ' + plural(c.devices, 'устройство', 'устройства', 'устройств')));
+        f.appendChild(el('span', 'chip', ago(c.last)));
+        li.appendChild(f);
+        var b = el('button', 'btn tiny', 'В VPN');
+        b.type = 'button';
+        b.addEventListener('click', function () {
+          if (li.querySelector('.chooser')) return;
+          open++;
+          var ch = chooser(c.suggest, function () {
+            open--;
+            li.classList.add('leaving');
+            setTimeout(function () { load(true); }, reducedMotion ? 0 : 350);
+          }, function () { open--; ch.remove(); });
+          li.appendChild(ch);
+        });
+        li.appendChild(b);
+        ul.appendChild(li);
+      });
+    }
+
+    function load(animate) {
+      var qs = Object.keys(q).filter(function (k) { return q[k] !== ''; })
+        .map(function (k) { return k + '=' + encodeURIComponent(q[k]); }).join('&');
+      return api('GET', '/api/v1/access?' + qs).then(function (res) {
+        document.getElementById('access-off').hidden = true;
+        document.getElementById('access-main').hidden = false;
+        data = res;
+        if (!res.rows) res.rows = [];
+        fillDevices();
+        summary(res.totals);
+        renderCands();
+        renderRows(animate);
+        live.classList.remove('tick');
+        void live.offsetWidth;
+        live.classList.add('tick');
+      }, function (err) {
+        if (err.status === 404) {
+          document.getElementById('access-off').hidden = false;
+          document.getElementById('access-main').hidden = true;
+          document.getElementById('cand-card').hidden = true;
+          return;
+        }
+        toast(err.message, 'bad');
+      });
+    }
+
+    function refilter() { shown = ACCESS_PAGE; prev = null; load(true); }
+
+    function poll() {
+      if (open > 0 || document.hidden) { live.classList.add('paused'); return; }
+      live.classList.remove('paused');
+      load(false);
+    }
+
+    segmented(document.getElementById('acc-period'), 'data-hours', function (h) { q.hours = Number(h); refilter(); });
+    segmented(document.getElementById('acc-route'), 'data-route', function (v) { q.route = v; refilter(); });
+    segmented(document.getElementById('acc-status'), 'data-status', function (v) { q.status = v; refilter(); });
+    devSel.addEventListener('change', function () { q.device = devSel.value; refilter(); });
+    search.addEventListener('input', function () {
+      clearTimeout(searchT);
+      searchT = setTimeout(function () { q.q = search.value.trim(); refilter(); }, 300);
+    });
+    more.addEventListener('click', function () { shown += ACCESS_PAGE; renderRows(false); });
+
+    // Третья кнопка периода — вся история (ACCESS_HISTORY_DAYS).
+    api('GET', '/api/v1/status').then(function (st) {
+      var b = document.querySelector('#acc-period [data-hours="168"]');
+      if (st.history_days > 0 && st.history_days !== 7) {
+        b.setAttribute('data-hours', st.history_days * 24);
+        b.textContent = st.history_days + ' ' + plural(st.history_days, 'день', 'дня', 'дней');
+      }
+    }, function () {});
+
+    return {
+      enter: function () { prev = null; load(true); timer = setInterval(poll, ACCESS_POLL_MS); },
+      leave: function () { clearInterval(timer); }
+    };
+  })();
+
   // --- Список VPN ------------------------------------------------------------
 
   var MAX_ROWS = 400;
@@ -450,11 +790,11 @@
       var sum = document.getElementById('import-summary');
       sum.textContent = '';
       sum.appendChild(el('span', 'chip', fileName));
-      sum.appendChild(el('span', 'chip add', '+' + res.added.length + ' добавится'));
-      if (res.mode === 'replace') sum.appendChild(el('span', 'chip del', '−' + res.removed.length + ' удалится'));
+      sum.appendChild(el('span', 'chip chip-ok', '+' + res.added.length + ' добавится'));
+      if (res.mode === 'replace') sum.appendChild(el('span', 'chip chip-bad', '−' + res.removed.length + ' удалится'));
       sum.appendChild(el('span', 'chip', res.kept + ' без изменений'));
-      if (res.invalid.length) sum.appendChild(el('span', 'chip warn', 'ошибок: ' + res.invalid.length));
-      if (res.conflicts.length) sum.appendChild(el('span', 'chip del', 'конфликтов: ' + res.conflicts.length));
+      if (res.invalid.length) sum.appendChild(el('span', 'chip chip-warn', 'ошибок: ' + res.invalid.length));
+      if (res.conflicts.length) sum.appendChild(el('span', 'chip chip-bad', 'конфликтов: ' + res.conflicts.length));
       fillDiff('import-added', res.added);
       fillDiff('import-removed', res.mode === 'replace' ? res.removed : []);
       badLines(document.getElementById('import-bad'), res.conflicts.concat(res.invalid));

@@ -28,6 +28,7 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
+	"github.com/volkserg/rpi5-gorouter/internal/access"
 	"github.com/volkserg/rpi5-gorouter/internal/api"
 	"github.com/volkserg/rpi5-gorouter/internal/config"
 	"github.com/volkserg/rpi5-gorouter/internal/dhcp"
@@ -97,6 +98,12 @@ type daemon struct {
 	// applyReq — запросы API на применение списков: выполняются в основном
 	// цикле, как перечитывание по SIGHUP, и не пересекаются с ним.
 	applyReq chan applyRequest
+
+	// Учёт обращений устройств (access_linux.go).
+	tracker    atomic.Pointer[access.Tracker]
+	accessStop func()
+	view       atomic.Pointer[netView]
+	vpnMatch   *domain.Matcher[struct{}]
 }
 
 type applyRequest struct {
@@ -261,6 +268,7 @@ func (d *daemon) apply() error {
 	if err := d.syncDNS(cfg, entries, overrides, recreated); err != nil {
 		return err
 	}
+	d.syncAccess(cfg)
 	// В фоне: остановка FTL может длиться десятки секунд и не должна
 	// задерживать готовность routerd (иначе systemd убьёт его по таймауту старта).
 	go d.syncPihole(cfg)
@@ -282,6 +290,10 @@ func (d *daemon) updateSnapshot() {
 	if d.cfg.VPNFailoverOpen {
 		failover = "open"
 	}
+	d.view.Store(&netView{
+		lan: d.cfg.LANSubnet, rpi: d.cfg.RPi5IP, locals: d.cfg.LocalClients,
+		mode: d.spec.Mode, bypass: d.spec.Bypass, static: d.spec.Static, vpn: d.vpnMatch, pool: d.pool,
+	})
 	d.snap.Store(&api.Status{
 		Version:      d.Version,
 		StartedAt:    d.started,
@@ -296,7 +308,18 @@ func (d *daemon) updateSnapshot() {
 		DHCP:         d.cfg.DHCPEnabled,
 		RPiIP:        d.cfg.RPi5IP.String(),
 		LAN:          d.cfg.LANSubnet.String(),
+		Access:       d.cfg.AccessTracking(),
+		HistoryDays:  int(d.cfg.AccessHistory / (24 * time.Hour)),
 	})
+}
+
+// Access — выборка из истории обращений (api.Backend); false — учёт выключен.
+func (d *daemon) Access(q access.Query) (access.Result, bool) {
+	t := d.tracker.Load()
+	if t == nil {
+		return access.Result{}, false
+	}
+	return t.Query(q), true
 }
 
 // Status — состояние для API (api.Backend).
@@ -438,6 +461,7 @@ func (d *daemon) syncDNS(cfg *config.Config, entries []lists.Entry, overrides []
 			vpn.Set(e.Domain, struct{}{})
 		}
 	}
+	d.vpnMatch = vpn
 	ovr := domain.NewMatcher[[]netip.AddrPort]()
 	for _, o := range overrides {
 		ups, _ := ovr.Get(o.Domain)
@@ -471,7 +495,12 @@ func (d *daemon) syncDNS(cfg *config.Config, entries []lists.Entry, overrides []
 		d.dns.Shutdown()
 		d.dns = nil
 	}
-	srv := dnsproxy.New(dnsproxy.Options{Listen: listen, Rules: rules, Sets: d.dyn, Log: d.Log})
+	srv := dnsproxy.New(dnsproxy.Options{Listen: listen, Rules: rules, Sets: d.dyn, Log: d.Log,
+		OnAnswer: func(client netip.Addr, name string, addrs []netip.Addr, ttl time.Duration) {
+			if t := d.tracker.Load(); t != nil {
+				t.Answer(client, name, addrs, ttl)
+			}
+		}})
 	if err := srv.Start(); err != nil {
 		return err
 	}
@@ -635,6 +664,7 @@ func waitDNS(ctx context.Context, server netip.AddrPort, limit time.Duration) {
 
 // cleanup останавливает DHCP и DNS и убирает правила routerd.
 func (d *daemon) cleanup() {
+	d.stopAccess()
 	if d.apiSrv != nil {
 		_ = d.apiSrv.Close()
 	}

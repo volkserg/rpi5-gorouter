@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/volkserg/rpi5-gorouter/internal/access"
 	"github.com/volkserg/rpi5-gorouter/internal/api"
 	"github.com/volkserg/rpi5-gorouter/internal/lists"
 	"github.com/volkserg/rpi5-gorouter/internal/web"
@@ -59,6 +60,24 @@ type fake struct {
 	dir     string
 	started time.Time
 	phase   int
+	tracker *access.Tracker
+}
+
+func (f *fake) Access(q access.Query) (access.Result, bool) { return f.tracker.Query(q), true }
+
+// vpnEntries — записи-домены из файла списка демо.
+func (f *fake) vpnEntries() []string {
+	l, _, err := lists.ReadVPN(filepath.Join(f.dir, lists.VPNFileName))
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range l.Entries() {
+		if e.Kind == lists.KindDomain {
+			out = append(out, e.Domain)
+		}
+	}
+	return out
 }
 
 func (f *fake) Status() api.Status {
@@ -67,7 +86,7 @@ func (f *fake) Status() api.Status {
 	st := api.Status{
 		Version: "demo", StartedAt: f.started, Mode: "tproxy", Failover: "closed",
 		TunnelUp: true, LocalClients: 1, DHCP: true,
-		RPiIP: "192.168.3.2", LAN: "192.168.3.0/24",
+		RPiIP: "192.168.3.2", LAN: "192.168.3.0/24", Access: true, HistoryDays: 7,
 	}
 	if l, _, err := lists.ReadVPN(filepath.Join(f.dir, lists.VPNFileName)); err == nil {
 		for _, e := range l.Entries() {
@@ -132,6 +151,9 @@ func main() {
 		}
 	}
 	f := &fake{dir: dir, started: time.Now().Add(-26 * time.Hour)}
+	vpnHas := vpnChecker(f.vpnEntries)
+	f.tracker = newTracker(vpnHas)
+	go (&traffic{t: f.tracker, vpnHas: vpnHas}).run()
 	sock := filepath.Join(dir, "api.sock")
 	l, err := api.Listen(sock)
 	if err != nil {

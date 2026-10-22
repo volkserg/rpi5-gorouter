@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/volkserg/rpi5-gorouter/internal/access"
 	"github.com/volkserg/rpi5-gorouter/internal/lists"
 )
 
@@ -57,6 +58,9 @@ type Status struct {
 	DHCP         bool   `json:"dhcp"`
 	RPiIP        string `json:"rpi_ip"`
 	LAN          string `json:"lan"`
+	// Access — учёт обращений включён; HistoryDays — сутки истории.
+	Access      bool `json:"access"`
+	HistoryDays int  `json:"history_days"`
 }
 
 // Backend — то, что API берёт у демона.
@@ -65,6 +69,8 @@ type Backend interface {
 	// Apply применяет изменённые списки (как reload-vpn-domains) и ждёт
 	// результата; user и what — для журнала.
 	Apply(user, what string) error
+	// Access — выборка из истории обращений; false — учёт выключен.
+	Access(q access.Query) (access.Result, bool)
 }
 
 // Error — тело ответа с ошибкой.
@@ -87,6 +93,7 @@ func Handler(b Backend, configDir string) http.Handler {
 	mux.HandleFunc("GET /v1/overrides", l.overrides)
 	mux.HandleFunc("PUT /v1/overrides", l.saveOverrides)
 	mux.HandleFunc("GET /v1/overrides/file", l.file(l.overridePath(), lists.OverrideFileName))
+	mux.HandleFunc("GET /v1/access", func(w http.ResponseWriter, r *http.Request) { accessQuery(w, r, b) })
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusNotFound, Error{"нет такого метода API: " + r.Method + " " + r.URL.Path})
 	})

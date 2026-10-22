@@ -91,7 +91,13 @@ type Config struct {
 	WebUI bool
 	// WebPort — порт HTTPS веб-интерфейса на RPI5_IP.
 	WebPort uint16
+	// AccessHistory — сколько хранить историю обращений устройств; 0 —
+	// обращения не учитываются. Учёт работает только с веб-интерфейсом.
+	AccessHistory time.Duration
 }
+
+// AccessTracking — учитывать ли обращения устройств (страница «Обращения»).
+func (c *Config) AccessTracking() bool { return c.WebUI && c.AccessHistory > 0 }
 
 // LocalIfacePrefix — префикс имени veth локального сервиса на стороне RPi.
 const LocalIfacePrefix = "rc-"
@@ -164,6 +170,8 @@ var defaults = map[string]string{
 	"LOCAL_CLIENTS":       "",
 	"WEB_UI":              "no",
 	"WEB_PORT":            "8443",
+	// Сутки истории обращений устройств; 0 — не учитывать.
+	"ACCESS_HISTORY_DAYS": "7",
 }
 
 // localNameRe — имя локального сервиса: rc-<имя> должно уложиться в 15 символов
@@ -341,6 +349,11 @@ func FromValues(values map[string]string) (*Config, error) {
 		errs = append(errs, fmt.Errorf("WEB_PORT=%q: ожидается порт 1–65535", get("WEB_PORT")))
 	} else {
 		cfg.WebPort = uint16(v)
+	}
+	if v, err := strconv.ParseUint(get("ACCESS_HISTORY_DAYS"), 10, 8); err != nil || v > 90 {
+		errs = append(errs, fmt.Errorf("ACCESS_HISTORY_DAYS=%q: ожидается число суток от 0 до 90", get("ACCESS_HISTORY_DAYS")))
+	} else {
+		cfg.AccessHistory = time.Duration(v) * 24 * time.Hour
 	}
 	locals, lerrs := parseLocalClients(get("LOCAL_CLIENTS"))
 	cfg.LocalClients = locals

@@ -904,6 +904,17 @@ cert_has_rpi_ip() {
         openssl x509 -noout -ext subjectAltName | grep -q 'IP Address:192.168.3.2'
 }
 eq_ui_status() { [[ "$(ui /dev/null "${WEB_URL}/api/v1/status")" == "$1" ]]; }
+# Обращения за час через веб-интерфейс (файл ответа — в WEB_TMP).
+acc_fetch() { ui "${WEB_TMP}/acc" "${WEB_URL}/api/v1/access?hours=1" >/dev/null; }
+acc_py() { acc_fetch && python3 -c "import json,sys; d=json.load(open('${WEB_TMP}/acc')); $1" "${@:2}"; }
+# acc_sum <ресурс> <маршрут> <поле> — сумма по всем устройствам.
+acc_sum() { acc_py 'print(sum(r[sys.argv[3]] for r in d["rows"] if r["resource"]==sys.argv[1] and r["route"]==sys.argv[2]))' "$@"; }
+acc_grew() { [[ "$(acc_sum "$1" "$2" "$3")" -gt "$4" ]]; }
+acc_has_device() { acc_py 'sys.exit(0 if any(x["name"]==sys.argv[1] for x in d["devices"]) else 1)' "$1"; }
+acc_in_list() { acc_py 'sys.exit(0 if any(r["in_list"] for r in d["rows"] if r["resource"]==sys.argv[1]) else 1)' "$1"; }
+acc_list_entry() { acc_py 'sys.exit(0 if any(r.get("list_entry")==sys.argv[2] for r in d["rows"] if r["resource"]==sys.argv[1]) else 1)' "$1" "$2"; }
+acc_candidate() { acc_py 'sys.exit(0 if any(c["resource"]==sys.argv[1] for c in d["candidates"]) else 1)' "$1"; }
+acc_status_on() { ui "${WEB_TMP}/st" "${WEB_URL}/api/v1/status" >/dev/null && grep -q '"access":true' "${WEB_TMP}/st"; }
 # ui_json <файл ответа> <метод> <путь> <JSON>; ui_text — тело текстом; ui_file <файл ответа> <параметры импорта> <файл>.
 ui_json() { ui "$1" -X "$2" -H 'X-Routerd-CSRF: 1' -H 'Content-Type: application/json' --data "$4" "${WEB_URL}$3"; }
 ui_text() { ui "$1" -X "$2" -H 'X-Routerd-CSRF: 1' -H 'Content-Type: text/plain' --data-binary "$4" "${WEB_URL}$3"; }
@@ -1607,12 +1618,51 @@ cmd_test_web() {
     printf '%s\n' "${ovr_before}" >"${CONFIG_DIR}/dns_override.txt"
     ctl reload-vpn-domains >/dev/null
 
+    log_info "Обращения устройств"
+    WEB_TMP="${tmp}"
+    local b_ok b_tun b_rf b_to b_nd
+    expect "учёт обращений включён" acc_status_on
+    b_ok="$(acc_sum direct.example direct ok)"
+    b_tun="$(acc_sum vpn.example tunnel ok)"
+    b_rf="$(acc_sum direct.example direct refused)"
+    b_to="$(acc_sum corp.example direct timeout)"
+    resolve client direct.example 192.168.3.2 >/dev/null
+    resolve client vpn.example 192.168.3.2 >/dev/null
+    fetch direct.example
+    fetch vpn.example
+    nsx client curl -s --max-time 3 http://direct.example:81/ >/dev/null 2>&1 || true
+    expect "успех напрямую: direct.example" wait_for 15 acc_grew direct.example direct ok "${b_ok}"
+    expect "успех через туннель: vpn.example" wait_for 15 acc_grew vpn.example tunnel ok "${b_tun}"
+    expect "отказ (RST, порт 81)" wait_for 15 acc_grew direct.example direct refused "${b_rf}"
+    expect "устройство названо по аренде DHCP (labclient)" acc_has_device labclient
+    expect "vpn.example — в списке VPN" acc_in_list vpn.example
+    expect "  … по записи vpn.example (её можно убрать из обращений)" acc_list_entry vpn.example vpn.example
+    # corp.example — тот же адрес, что direct.example, но без успешных
+    # обращений: повторные таймауты делают его кандидатом в VPN.
+    direct_block on
+    nsx client curl -s --max-time 3 http://corp.example/ >/dev/null 2>&1 || true
+    nsx client curl -s --max-time 3 http://corp.example/ >/dev/null 2>&1 || true
+    expect "таймаут напрямую (SYN без ответа)" wait_for 40 acc_grew corp.example direct timeout "${b_to}"
+    expect "  … corp.example — кандидат в VPN" wait_for 20 acc_candidate corp.example
+    direct_block off
+    if [[ "$(conf_get VPN_MODE)" != route ]]; then
+        # Через туннель к закрытому порту: GOST принимает соединение, но
+        # удалённая сторона не соединяется — ответ без данных.
+        b_nd="$(acc_sum direct.example tunnel nodata)"
+        ctl add-vpn-ip 203.0.113.10 >/dev/null
+        nsx client curl -s --max-time 5 http://direct.example:81/ >/dev/null 2>&1 || true
+        expect "туннель без данных (порт 81 через туннель)" wait_for 30 acc_grew direct.example tunnel nodata "${b_nd}"
+        ctl remove-vpn-ip 203.0.113.10 >/dev/null
+    fi
+    b_ok="$(acc_sum direct.example direct ok)"
+
     log_info "routerd остановлен и снова запущен"
     systemctl stop routerd
     expect "демон остановлен — 502 с объяснением" eq "$(ui "${tmp}/err" "${WEB_URL}/api/v1/status")" 502
     expect "  … текст ошибки" grep -q 'routerd не отвечает' "${tmp}/err"
     ctl start >/dev/null
     expect "после запуска демона API снова доступен" wait_for 30 eq_ui_status 200
+    expect "история обращений пережила перезапуск" eq "$(acc_sum direct.example direct ok)" "${b_ok}"
 
     log_info "Смена пароля завершает сессии"
     printf 'new-%s\n' "${LAB_WEB_PASS}" | ROUTERD_CONFIG_DIR="${CONFIG_DIR}" routerd web passwd "${LAB_WEB_USER}" >/dev/null

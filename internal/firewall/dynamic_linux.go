@@ -100,6 +100,14 @@ func (d *Dynamic) Learn(addrs []netip.Addr, ttl time.Duration) {
 	d.prune(now)
 }
 
+// Has — адрес сейчас в vpn_dynamic (по сроку, выставленному routerd).
+func (d *Dynamic) Has(a netip.Addr) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	exp, ok := d.expires[a]
+	return ok && exp.After(d.now())
+}
+
 // Forget убирает адреса из vpn_dynamic (домен удалён из списка).
 func (d *Dynamic) Forget(addrs []netip.Addr) {
 	d.mu.Lock()

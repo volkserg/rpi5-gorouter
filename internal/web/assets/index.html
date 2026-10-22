@@ -24,6 +24,7 @@
     </div>
     <nav class="tabs" id="tabs" aria-label="Разделы">
       <a class="tab" href="#overview" data-view="overview">Обзор</a>
+      <a class="tab" href="#access" data-view="access">Обращения</a>
       <a class="tab" href="#vpn" data-view="vpn">Список VPN</a>
       <a class="tab" href="#dns" data-view="dns">DNS override</a>
     </nav>
@@ -116,6 +117,76 @@
           <dt>routerd работает</dt><dd data-bind="uptime">—</dd>
           <dt>Версия</dt><dd class="mono" data-bind="version">—</dd>
         </dl>
+      </div>
+    </section>
+
+    <section class="view" id="view-access" data-view="access" hidden>
+      <div class="card warn-card reveal" id="access-off" hidden>
+        <div class="card-head"><h2>Учёт обращений выключен</h2></div>
+        <p class="hint">Включается в <code>router.conf</code>: <code>ACCESS_HISTORY_DAYS=7</code> (сутки истории),
+          затем <code>sudo rsc reload-vpn-domains</code>.</p>
+      </div>
+
+      <div class="card cand-card reveal" id="cand-card" hidden>
+        <div class="card-head">
+          <h2>Кандидаты в VPN</h2>
+          <span class="pill warn" id="cand-count"><i></i><span></span></span>
+        </div>
+        <p class="hint">Эти ресурсы напрямую не отвечают (таймаут) — возможно, их стоит направить через туннель.</p>
+        <ul class="cands" id="cands"></ul>
+      </div>
+
+      <div class="card reveal" id="access-main">
+        <div class="card-head">
+          <h2>Обращения устройств</h2>
+          <span class="live" id="access-live" title="Обновляется каждые 10 с"><i></i>в реальном времени</span>
+        </div>
+        <div class="access-tools">
+          <div class="segmented" id="acc-period" role="radiogroup" aria-label="Период">
+            <button type="button" role="radio" aria-checked="false" data-hours="1">1 ч</button>
+            <button type="button" role="radio" aria-checked="true" data-hours="24">24 ч</button>
+            <button type="button" role="radio" aria-checked="false" data-hours="168">7 дней</button>
+          </div>
+          <label class="select">
+            <select id="acc-device" aria-label="Устройство"><option value="">Все устройства</option></select>
+          </label>
+          <div class="segmented" id="acc-route" role="radiogroup" aria-label="Маршрут">
+            <button type="button" role="radio" aria-checked="true" data-route="">Любой маршрут</button>
+            <button type="button" role="radio" aria-checked="false" data-route="direct">Напрямую</button>
+            <button type="button" role="radio" aria-checked="false" data-route="tunnel">Туннель</button>
+          </div>
+          <div class="segmented" id="acc-status" role="radiogroup" aria-label="Исход">
+            <button type="button" role="radio" aria-checked="true" data-status="">Все</button>
+            <button type="button" role="radio" aria-checked="false" data-status="problems">Проблемы</button>
+            <button type="button" role="radio" aria-checked="false" data-status="ok">Успешные</button>
+          </div>
+          <label class="search">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="6"/><path d="M14 14 L18 18"/></svg>
+            <input type="search" id="acc-search" placeholder="Ресурс, адрес или устройство" spellcheck="false" autocapitalize="none">
+          </label>
+        </div>
+
+        <div class="acc-summary" id="acc-summary"></div>
+        <div class="legend">
+          <span><i class="ok"></i>успешно</span>
+          <span><i class="to"></i>таймаут — нет ответа</span>
+          <span><i class="rf"></i>отказ или сброс без ответа</span>
+          <span><i class="nd"></i>туннель без данных</span>
+        </div>
+
+        <div class="acc-table" id="acc-table" role="table" aria-label="Обращения">
+          <div class="acc-row acc-headrow" role="row">
+            <span role="columnheader">Ресурс</span>
+            <span role="columnheader">Устройство</span>
+            <span role="columnheader">Маршрут</span>
+            <span role="columnheader">Исходы</span>
+            <span role="columnheader">Последнее</span>
+            <span role="columnheader"></span>
+          </div>
+          <div id="acc-rows"></div>
+        </div>
+        <p class="list-foot" id="acc-foot"></p>
+        <button class="btn ghost" type="button" id="acc-more" hidden>Показать ещё</button>
       </div>
     </section>
 

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+
+	"github.com/volkserg/rpi5-gorouter/internal/access"
 )
 
 type fakeBackend struct {
@@ -16,7 +18,8 @@ type fakeBackend struct {
 	err     error
 }
 
-func (f *fakeBackend) Status() Status { return f.st }
+func (f *fakeBackend) Status() Status                            { return f.st }
+func (f *fakeBackend) Access(access.Query) (access.Result, bool) { return access.Result{}, false }
 func (f *fakeBackend) Apply(user, what string) error {
 	f.applied = append(f.applied, user+": "+what)
 	return f.err

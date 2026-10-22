@@ -77,6 +77,10 @@ type Options struct {
 	MaxInflight int
 	// UpstreamTimeout — ожидание ответа одного upstream.
 	UpstreamTimeout time.Duration
+	// OnAnswer получает A-записи каждого успешного ответа клиенту (учёт
+	// обращений: имя ресурса по адресу соединения). Вызывается из
+	// обработчика запроса — должна быть быстрой.
+	OnAnswer func(client netip.Addr, name string, addrs []netip.Addr, ttl time.Duration)
 }
 
 // Server — DNS-прокси.
@@ -259,7 +263,11 @@ func (s *Server) handle(w dns.ResponseWriter, req *dns.Msg) *dns.Msg {
 
 	if resp.Rcode == dns.RcodeSuccess {
 		if addrs, ttl := aRecords(resp); len(addrs) > 0 {
-			s.recent.add(domain.Normalize(q.Name), addrs, ttl)
+			name := domain.Normalize(q.Name)
+			s.recent.add(name, addrs, ttl)
+			if s.opts.OnAnswer != nil && client.IsValid() {
+				s.opts.OnAnswer(client, name, addrs, ttl)
+			}
 			if isVPN && s.opts.Sets != nil {
 				s.opts.Sets.Learn(addrs, ttl)
 			}
