@@ -3,9 +3,7 @@
 package daemon
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -304,8 +302,9 @@ func (d *daemon) Journal(ctx context.Context, id, cursor string, lines int) (api
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	args := []string{"-u", unit, "-o", "json", "--no-pager", "-n", strconv.Itoa(lines),
-		"--output-fields=MESSAGE,PRIORITY"}
+	// Все поля записи и --all: --output-fields и поля длиннее 4 КБ (null без
+	// --all) в разных версиях systemd ведут себя по-разному — текст терялся.
+	args := []string{"-u", unit, "-o", "json", "--all", "--no-pager", "-n", strconv.Itoa(lines)}
 	if cursor != "" {
 		args = append(args, "--after-cursor="+cursor)
 	}
@@ -313,47 +312,5 @@ func (d *daemon) Journal(ctx context.Context, id, cursor string, lines int) (api
 	if err != nil {
 		return api.Journal{}, fmt.Errorf("journalctl: %w", err)
 	}
-	j := api.Journal{Unit: unit, Entries: []api.JournalEntry{}, Cursor: cursor}
-	sc := bufio.NewScanner(strings.NewReader(string(out)))
-	sc.Buffer(make([]byte, 64<<10), 1<<20)
-	for sc.Scan() {
-		var m map[string]json.RawMessage
-		if json.Unmarshal(sc.Bytes(), &m) != nil {
-			continue
-		}
-		e := api.JournalEntry{Priority: 6}
-		var ts, prio, cur string
-		_ = json.Unmarshal(m["__REALTIME_TIMESTAMP"], &ts)
-		_ = json.Unmarshal(m["PRIORITY"], &prio)
-		_ = json.Unmarshal(m["__CURSOR"], &cur)
-		if us, err := strconv.ParseInt(ts, 10, 64); err == nil {
-			e.Time = us / 1000
-		}
-		if p, err := strconv.Atoi(prio); err == nil {
-			e.Priority = p
-		}
-		e.Message = journalMessage(m["MESSAGE"])
-		j.Entries = append(j.Entries, e)
-		if cur != "" {
-			j.Cursor = cur
-		}
-	}
-	return j, nil
-}
-
-// journalMessage — MESSAGE строкой или массивом байтов (не UTF-8).
-func journalMessage(raw json.RawMessage) string {
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		return s
-	}
-	var b []byte
-	var nums []int
-	if json.Unmarshal(raw, &nums) == nil {
-		for _, n := range nums {
-			b = append(b, byte(n))
-		}
-		return strings.ToValidUTF8(string(b), "�")
-	}
-	return ""
+	return api.ParseJournal(unit, cursor, out), nil
 }

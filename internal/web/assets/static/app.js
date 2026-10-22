@@ -952,7 +952,7 @@
 
     // Строка slog: level=… msg="…" ключ=значение — уровень, сообщение и пары.
     function parse(e) {
-      var m = e.message, out = { lvl: LVL[e.priority] || 'info', msg: m, kv: [] };
+      var m = e.message || '', out = { lvl: LVL[e.priority] || 'info', msg: m || '(запись без текста)', kv: [] };
       var re = /(\S+?)=("(?:[^"\\]|\\.)*"|\S+)/g, mm, found = false, rest = [];
       while ((mm = re.exec(m)) !== null) {
         found = true;
@@ -962,7 +962,7 @@
         else if (k === 'msg') out.msg = v;
         else rest.push([k, v]);
       }
-      if (found && /^level=/.test(m)) out.kv = rest; else out.msg = m;
+      if (found && /^level=/.test(m)) out.kv = rest; else if (m) out.msg = m;
       return out;
     }
 
@@ -991,6 +991,7 @@
         mark(c, String(kv[1]), q);
         msg.appendChild(c);
       });
+      row.appendChild(msg);
       row.title = d.toLocaleString('ru-RU');
       return row;
     }
@@ -999,7 +1000,7 @@
       var p = e.parsed || (e.parsed = parse(e));
       if (level < 7 && !(p.lvl === 'warn' || p.lvl === 'err')) return false;
       var q = search.value.trim().toLowerCase();
-      return !q || e.message.toLowerCase().indexOf(q) >= 0;
+      return !q || (e.message || '').toLowerCase().indexOf(q) >= 0;
     }
 
     function atBottom() { return box.scrollHeight - box.scrollTop - box.clientHeight < 40; }
