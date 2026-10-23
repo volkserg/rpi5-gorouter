@@ -518,6 +518,15 @@
     var still = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     var ease = { duration: 380, easing: 'cubic-bezier(.2, .85, .25, 1)' };
     var floating = false;
+    // activeGhost — гаснущая тень возврата; новое всплытие убирает её сразу.
+    var activeGhost = null;
+    function clearGhost() {
+      if (!activeGhost) return;
+      activeGhost.anim.cancel();
+      activeGhost.g.remove();
+      activeGhost = null;
+      elm.classList.remove('ghosting');
+    }
 
     // anchor — по чему совмещать при возврате: первое содержимое (индикатор),
     // а не край плашки — кнопки доезжают ровно на свои места.
@@ -529,6 +538,7 @@
     function move(on, animate) {
       var a = on ? elm.getBoundingClientRect() : anchor();
       if (on) {
+        clearGhost();
         ph.style.width = elm.offsetWidth + 'px';
         ph.style.height = elm.offsetHeight + 'px';
         ph.style.marginLeft = getComputedStyle(elm).marginLeft;
@@ -580,8 +590,7 @@
         var dr = elm.getBoundingClientRect(), da = anchor();
         var left = (da.left - dr.left) - (fa.left - fr.left), top = (da.top - dr.top) - (fa.top - fr.top);
         g.style.right = 'auto';
-        var pos = elm.style.position;
-        if (getComputedStyle(elm).position === 'static') elm.style.position = 'relative';
+        clearGhost();
         elm.classList.add('ghosting');
         elm.appendChild(g);
         // Рамка стягивается до размеров блока на месте: выступающая часть
@@ -590,15 +599,15 @@
         g.querySelectorAll('.only-float').forEach(function (x) {
           x.animate([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'scale(.4)' }], t);
         });
-        g.animate([
+        var anim = g.animate([
           { left: left + 'px', top: top + 'px', width: fr.width + 'px', height: fr.height + 'px', opacity: 1 },
           { opacity: 1, offset: 0.55 },
           { left: '0px', top: '0px', width: dr.width + 'px', height: dr.height + 'px', opacity: 0 }
-        ], t).finished.then(function () {
-          g.remove();
-          elm.classList.remove('ghosting');
-          elm.style.position = pos;
-        });
+        ], t);
+        var me = activeGhost = { g: g, anim: anim };
+        anim.finished.then(function () {
+          if (activeGhost === me) clearGhost();
+        }, function () { /* отменена новым всплытием */ });
       };
     }
 
@@ -1035,23 +1044,74 @@
 
     // «Показать все / Свернуть» — в шапке кандидатов; пока длинный список
     // листается (шапка ушла вверх, карточка на экране), кнопка плавает.
-    // «Свернуть» возвращает к началу карточки, а не в середину обращений.
+    // «Свернуть» из глубины списка «втягивает» его: экран держится на нижней
+    // границе карточки и едет с ней вверх, пока список сжимается до первых
+    // CAND_TOP, — так в конце видна вся карточка, а не середина обращений.
     var CAND_TOP = 3, candAll = false, candOpen = {};
     var candCard = document.getElementById('cand-card');
     var candMore = document.getElementById('cand-more');
     var floatCand = floater(candMore);
     var candHead = 'below', candBody = 'below';
+    var collapsing = false;
     function candFloat() {
+      if (collapsing) return;
       floatCand(candAll && candHead === 'above' && candBody === 'in', candHead === 'hidden' || candBody === 'hidden');
     }
     watchPos(candCard.querySelector('.card-head'), function (p) { candHead = p; candFloat(); }, true);
     watchPos(candCard, function (p) { candBody = p; candFloat(); });
     candMore.addEventListener('click', function () {
+      if (collapsing) return;
+      if (candAll && candHead === 'above') { collapseFollow(); return; }
       candAll = !candAll;
       renderCands(true);
       candFloat();
-      if (!candAll) scrollToEl(candCard, true);
     });
+
+    function collapseFollow() {
+      var ul = document.getElementById('cands');
+      var items = ul.children;
+      var still = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      if (still || items.length <= CAND_TOP) {
+        candAll = false;
+        renderCands(true);
+        candFloat();
+        scrollToEl(candCard, true);
+        return;
+      }
+      var root = document.documentElement;
+      root.style.overflowAnchor = 'none';
+      collapsing = true;
+      // Нижняя граница карточки — у нижнего края экрана (если была ниже).
+      var y = Math.min(candCard.getBoundingClientRect().bottom, window.innerHeight - 24);
+      window.scrollBy(0, candCard.getBoundingClientRect().bottom - y);
+      var top = ul.getBoundingClientRect().top;
+      var h0 = ul.offsetHeight;
+      var h1 = items[CAND_TOP - 1].getBoundingClientRect().bottom - top;
+      ul.style.overflow = 'hidden';
+      ul.style.height = h0 + 'px';
+      var dur = Math.min(900, Math.max(450, (h0 - h1) / 6));
+      var start = null;
+      function ease(p) { return p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2; }
+      function step(now) {
+        if (start === null) start = now;
+        var p = Math.min(1, (now - start) / dur);
+        ul.style.height = h0 + (h1 - h0) * ease(p) + 'px';
+        // Экран — вместе с нижней границей карточки.
+        window.scrollBy(0, candCard.getBoundingClientRect().bottom - y);
+        if (p < 1) { requestAnimationFrame(step); return; }
+        candAll = false;
+        collapsing = false;
+        renderCands(true);
+        ul.style.height = ul.style.overflow = '';
+        root.style.overflowAnchor = '';
+        candFloat();
+      }
+      // Подсветка — с начала сворачивания: к концу она уже гаснет.
+      candCard.classList.remove('landed');
+      void candCard.offsetWidth;
+      candCard.classList.add('landed');
+      requestAnimationFrame(step);
+    }
 
     function renderCands(force) {
       var card = document.getElementById('cand-card');
@@ -1059,7 +1119,7 @@
       var all = data.candidates;
       card.hidden = !all.length;
       document.getElementById('cand-count').lastElementChild.textContent = all.length;
-      if (!force && ul.querySelector('.chooser')) return;
+      if (collapsing || !force && ul.querySelector('.chooser')) return;
       var devs = names();
       ul.textContent = '';
       var list = candAll ? all : all.slice(0, CAND_TOP);

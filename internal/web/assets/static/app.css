@@ -668,6 +668,7 @@ h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .01em; }
 .float-ph { display: inline-block; flex: none; visibility: hidden; }
 .float-ghost { position: absolute !important; z-index: -1 !important; margin: 0 !important; overflow: hidden; box-sizing: border-box; animation: none !important; pointer-events: none; }
 .ghosting { isolation: isolate; }
+.ghosting:not(.float) { position: relative; }
 .live { white-space: nowrap; }
 #access-main .card-head, .cand-card .card-head { flex-wrap: wrap; }
 .live-ctl .live { margin-right: 4px; }
