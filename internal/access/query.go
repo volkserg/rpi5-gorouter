@@ -41,13 +41,15 @@ type Row struct {
 
 // Candidate — ресурс, который напрямую не отвечает: кандидат в список VPN.
 type Candidate struct {
-	Resource string   `json:"resource"`
-	IP       string   `json:"ip"`
-	Timeout  uint32   `json:"timeout"`
-	OK       uint32   `json:"ok"`
-	Devices  int      `json:"devices"`
-	Last     int64    `json:"last"`
-	Suggest  []string `json:"suggest"`
+	Resource string `json:"resource"`
+	IP       string `json:"ip"`
+	Timeout  uint32 `json:"timeout"`
+	OK       uint32 `json:"ok"`
+	Devices  int    `json:"devices"`
+	// DeviceKeys — какие устройства (ключи из Result.Devices).
+	DeviceKeys []string `json:"device_keys"`
+	Last       int64    `json:"last"`
+	Suggest    []string `json:"suggest"`
 }
 
 // Totals — сводка выборки.
@@ -183,6 +185,10 @@ func (t *Tracker) Query(q Query) Result {
 			continue
 		}
 		c.Devices = len(ca.devs)
+		for k := range ca.devs {
+			c.DeviceKeys = append(c.DeviceKeys, k)
+		}
+		sort.Strings(c.DeviceKeys)
 		c.IP = ipString(ca.ip)
 		c.Suggest = Suggest(c.Resource)
 		res.Candidates = append(res.Candidates, c)

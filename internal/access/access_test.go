@@ -173,6 +173,7 @@ func TestQueryAndCandidates(t *testing.T) {
 	}
 	cand := res.Candidates[0]
 	if cand.Resource != "files.storage.example.com" || cand.Timeout != 3 || cand.Devices != 2 ||
+		!reflect.DeepEqual(cand.DeviceKeys, []string{"ip:192.168.3.101", "mac:aa"}) ||
 		!reflect.DeepEqual(cand.Suggest, []string{"files.storage.example.com", "storage.example.com", "example.com"}) {
 		t.Errorf("кандидат: %+v", cand)
 	}

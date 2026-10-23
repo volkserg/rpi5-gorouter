@@ -49,6 +49,12 @@ var (
 		{name: "video.example.net", ip: netip.MustParseAddr("198.51.100.32"), port: 443, udp: true, weight: 5},
 		{name: "files.storage.example.com", ip: netip.MustParseAddr("192.0.2.50"), port: 443, fail: "timeout", weight: 3},
 		{name: "api.partner.example", ip: netip.MustParseAddr("192.0.2.60"), port: 8443, fail: "timeout", weight: 2},
+		// Ещё ресурсы без ответа напрямую: кандидатов больше пяти — видно сворачивание.
+		{name: "docs.vendor.example", ip: netip.MustParseAddr("192.0.2.61"), port: 443, fail: "timeout", weight: 2},
+		{name: "cdn.vendor.example", ip: netip.MustParseAddr("192.0.2.62"), port: 443, fail: "timeout", weight: 2},
+		{name: "status.service.example", ip: netip.MustParseAddr("192.0.2.63"), port: 443, fail: "timeout", weight: 1},
+		{name: "login.service.example", ip: netip.MustParseAddr("192.0.2.64"), port: 443, fail: "timeout", weight: 1},
+		{name: "media.service.example", ip: netip.MustParseAddr("192.0.2.65"), port: 443, fail: "timeout", weight: 1},
 		{name: "mail.example.net", ip: netip.MustParseAddr("198.51.100.33"), port: 993, weight: 3},
 		{name: "", ip: netip.MustParseAddr("198.51.100.90"), port: 8080, fail: "refused", weight: 1},
 		{name: "time.example.net", ip: netip.MustParseAddr("198.51.100.35"), port: 123, udp: true, weight: 2},

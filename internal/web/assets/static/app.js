@@ -132,6 +132,8 @@
       }
       v.hidden = !on;
     });
+    var tab = document.querySelector('.tab[data-view="' + name + '"]');
+    document.title = (tab ? tab.textContent + ' — ' : '') + 'routerd';
     if (current && views[current].leave) views[current].leave();
     current = name;
     if (views[name].enter) views[name].enter(params);
@@ -611,23 +613,50 @@
         (data.rows.length > shown ? 'Показано ' + shown + ' из ' + data.rows.length : '');
     }
 
-    function renderCands() {
+    var CAND_TOP = 3, candAll = false, candOpen = {};
+    var candMore = document.getElementById('cand-more');
+    candMore.addEventListener('click', function () { candAll = !candAll; renderCands(true); });
+
+    function renderCands(force) {
       var card = document.getElementById('cand-card');
       var ul = document.getElementById('cands');
-      card.hidden = !data.candidates.length;
-      document.getElementById('cand-count').lastElementChild.textContent = data.candidates.length;
-      if (ul.querySelector('.chooser')) return;
+      var all = data.candidates;
+      card.hidden = !all.length;
+      document.getElementById('cand-count').lastElementChild.textContent = all.length;
+      if (!force && ul.querySelector('.chooser')) return;
+      var devs = names();
       ul.textContent = '';
-      data.candidates.forEach(function (c, i) {
+      var list = candAll ? all : all.slice(0, CAND_TOP);
+      candMore.hidden = all.length <= CAND_TOP;
+      candMore.textContent = candAll ? 'Свернуть' : 'Показать все (' + all.length + ')';
+      list.forEach(function (c, i) {
         var li = el('li', 'cand');
         li.style.setProperty('--n', i);
         li.appendChild(el('span', 'name', c.resource));
         var f = el('span', 'facts');
         f.appendChild(el('span', 'chip chip-bad', 'таймаутов ' + c.timeout));
         if (c.ok) f.appendChild(el('span', 'chip chip-ok', 'успешных ' + c.ok));
-        f.appendChild(el('span', 'chip', c.devices + ' ' + plural(c.devices, 'устройство', 'устройства', 'устройств')));
+        var db = el('button', 'chip chip-btn', c.devices + ' ' + plural(c.devices, 'устройство', 'устройства', 'устройств'));
+        db.type = 'button';
+        db.setAttribute('aria-expanded', candOpen[c.resource] ? 'true' : 'false');
+        f.appendChild(db);
         f.appendChild(el('span', 'chip', ago(c.last)));
         li.appendChild(f);
+        // Какие устройства обращались — по нажатию на счётчик.
+        var devBox = el('div', 'cand-devs');
+        (c.device_keys || []).forEach(function (k) {
+          var d = devs[k] || { name: k };
+          var a = el('a', '', d.name);
+          a.href = '#access?device=' + encodeURIComponent(k) + '&name=' + encodeURIComponent(d.name);
+          a.title = 'Обращения устройства';
+          devBox.appendChild(a);
+        });
+        devBox.hidden = !candOpen[c.resource];
+        db.addEventListener('click', function () {
+          candOpen[c.resource] = !candOpen[c.resource];
+          devBox.hidden = !candOpen[c.resource];
+          db.setAttribute('aria-expanded', candOpen[c.resource] ? 'true' : 'false');
+        });
         var chk = el('a', 'btn ghost tiny', 'Проверить');
         chk.href = '#check?target=' + encodeURIComponent(c.resource);
         chk.title = 'Проверить доступность напрямую и через туннель';
@@ -645,6 +674,7 @@
           li.appendChild(ch);
         });
         li.appendChild(b);
+        li.appendChild(devBox);
         ul.appendChild(li);
       });
     }
@@ -892,23 +922,70 @@
     };
     var KIND = { local: 'сервис RPi', lease: 'DHCP', seen: 'без аренды' };
 
+    var PEN = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.5 2.5 L13.5 5.5 L5.5 13.5 H2.5 V10.5 Z M9 4 L12 7"/></svg>';
+
+    // rename — имя редактируется прямо в карточке: Enter — сохранить, Esc — отмена.
+    function rename(d, nameBox) {
+      if (nameBox.querySelector('input')) return;
+      var input = el('input');
+      input.value = d.lease_name ? d.name : '';
+      input.placeholder = d.lease_name || d.name;
+      input.maxLength = 40;
+      input.setAttribute('aria-label', 'Имя устройства');
+      var old = Array.prototype.slice.call(nameBox.childNodes);
+      nameBox.textContent = '';
+      nameBox.appendChild(input);
+      input.focus();
+      input.select();
+      var done = false;
+      function restore() { nameBox.textContent = ''; old.forEach(function (n) { nameBox.appendChild(n); }); }
+      function save() {
+        if (done) return;
+        done = true;
+        var v = input.value.trim();
+        if (v === (d.lease_name ? d.name : '')) { restore(); return; }
+        nameBox.classList.add('saving');
+        api('PUT', '/api/v1/devices/name', { key: d.key, name: v }).then(function () {
+          toast(v ? 'Устройство названо «' + v + '»' : 'Имя сброшено: ' + (d.lease_name || d.name), 'ok');
+          load();
+        }, function (err) {
+          toast(err.message, 'bad');
+          restore();
+        }).then(function () { nameBox.classList.remove('saving'); });
+      }
+      input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); save(); }
+        if (e.key === 'Escape') { done = true; restore(); }
+      });
+      input.addEventListener('blur', save);
+    }
+
     function card(d, i) {
-      var a = el('a', 'dev-card' + (d.active ? '' : ' inactive'));
-      a.href = '#access?device=' + encodeURIComponent(d.key) + '&name=' + encodeURIComponent(d.name);
+      var a = el('div', 'dev-card' + (d.active ? '' : ' inactive'));
       a.style.setProperty('--n', i);
       var head = el('div', 'dev-head');
       var icon = el('span', 'dev-icon');
       icon.innerHTML = ICONS[d.kind] || ICONS.seen;
       head.appendChild(icon);
       var title = el('div', 'dev-title');
-      title.appendChild(el('b', '', d.name));
+      var nameBox = el('div', 'dev-name');
+      nameBox.appendChild(el('b', '', d.name));
+      var pen = el('button', 'dev-edit');
+      pen.type = 'button';
+      pen.innerHTML = PEN;
+      pen.title = 'Задать имя';
+      pen.setAttribute('aria-label', 'Задать имя устройству ' + d.name);
+      pen.addEventListener('click', function () { rename(d, nameBox); });
+      nameBox.appendChild(pen);
+      title.appendChild(nameBox);
       var sub = KIND[d.kind] || '';
       if (d.kind === 'lease') sub += d.active ? ' · аренда до ' + new Date(d.expires).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : ' · аренда истекла';
       title.appendChild(el('span', '', sub));
       head.appendChild(title);
       a.appendChild(head);
       var meta = el('dl', 'dev-meta');
-      [['IP', d.ip], ['MAC', d.mac], ['имя', d.hostname && d.hostname !== d.name ? d.hostname : '']].forEach(function (p) {
+      [['IP', d.ip], ['MAC', d.mac], ['в аренде', d.lease_name || ''],
+        ['имя', d.hostname && d.hostname !== d.name && d.hostname !== d.lease_name ? d.hostname : '']].forEach(function (p) {
         if (!p[1]) return;
         meta.appendChild(el('dt', '', p[0]));
         meta.appendChild(el('dd', '', p[1]));
@@ -919,7 +996,9 @@
       if (d.problems) stats.appendChild(el('span', 'chip chip-bad', 'проблем ' + d.problems));
       if (d.last) stats.appendChild(el('span', 'chip', ago(d.last)));
       a.appendChild(stats);
-      a.appendChild(el('span', 'dev-go', 'обращения →'));
+      var go = el('a', 'dev-go', 'Обращения →');
+      go.href = '#access?device=' + encodeURIComponent(d.key) + '&name=' + encodeURIComponent(d.name);
+      a.appendChild(go);
       return a;
     }
 

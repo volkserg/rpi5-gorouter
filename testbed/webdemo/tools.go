@@ -106,7 +106,33 @@ func (f *fake) TunnelCheck(_ context.Context, run bool) api.TunnelCheck {
 	return t
 }
 
+func (f *fake) SetDeviceName(key, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.names == nil {
+		f.names = map[string]string{}
+	}
+	if name = strings.TrimSpace(name); name == "" {
+		delete(f.names, key)
+	} else {
+		f.names[key] = name
+	}
+	return nil
+}
+
 func (f *fake) Devices() []api.DeviceRow {
+	rows := f.devices()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range rows {
+		if n := f.names[rows[i].Key]; n != "" {
+			rows[i].LeaseName, rows[i].Name = rows[i].Name, n
+		}
+	}
+	return rows
+}
+
+func (f *fake) devices() []api.DeviceRow {
 	stats := map[string]access.DeviceInfo{}
 	for _, d := range f.tracker.Query(access.Query{Since: 24 * time.Hour, Limit: 1}).Devices {
 		stats[d.Key] = d

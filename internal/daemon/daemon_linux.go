@@ -31,6 +31,7 @@ import (
 	"github.com/volkserg/rpi5-gorouter/internal/access"
 	"github.com/volkserg/rpi5-gorouter/internal/api"
 	"github.com/volkserg/rpi5-gorouter/internal/config"
+	"github.com/volkserg/rpi5-gorouter/internal/devnames"
 	"github.com/volkserg/rpi5-gorouter/internal/dhcp"
 	"github.com/volkserg/rpi5-gorouter/internal/dnsproxy"
 	"github.com/volkserg/rpi5-gorouter/internal/domain"
@@ -106,6 +107,8 @@ type daemon struct {
 	vpnMatch   *domain.Matcher[struct{}]
 	// tunCheck — последняя проверка внешнего IP (tools_linux.go).
 	tunCheck tunnelChecks
+	// names — имена устройств, заданные в веб-интерфейсе.
+	names *devnames.Store
 }
 
 type applyRequest struct {
@@ -131,6 +134,9 @@ func Run(ctx context.Context, o Options) error {
 		return fmt.Errorf("netlink nftables: %w", err)
 	}
 	d := &daemon{Options: o, nft: nft, nl: nl, dyn: dyn, started: time.Now(), applyReq: make(chan applyRequest)}
+	if d.names, err = devnames.Open(o.StateDir); err != nil {
+		o.Log.Warn("имена устройств не прочитаны", "ошибка", err)
+	}
 
 	sigs := make(chan os.Signal, 4)
 	signal.Notify(sigs, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT)
@@ -322,7 +328,13 @@ func (d *daemon) Access(q access.Query) (access.Result, bool) {
 	if t == nil {
 		return access.Result{}, false
 	}
-	return t.Query(q), true
+	res := t.Query(q)
+	for i := range res.Devices {
+		if n := d.names.Get(res.Devices[i].Key); n != "" {
+			res.Devices[i].Name = n
+		}
+	}
+	return res, true
 }
 
 // Status — состояние для API (api.Backend).

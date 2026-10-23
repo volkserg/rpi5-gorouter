@@ -1695,6 +1695,14 @@ cmd_test_web() {
     expect "устройства: labclient (аренда DHCP)" ui_grep /api/v1/devices '"name":"labclient"'
     expect "журнал routerd: есть записи" ui_grep '/api/v1/journal?unit=routerd&lines=50' '"message":"level=INFO'
     expect "журнал неизвестного сервиса — 400" eq "$(ui /dev/null "${WEB_URL}/api/v1/journal?unit=sshd")" 400
+    expect "журнал Pi-hole (FTL.log): есть записи" ui_grep '/api/v1/journal?unit=pihole&lines=20' '"entries":\[{'
+    local dev_key
+    dev_key="$(acc_py 'print(next(x["key"] for x in d["devices"] if x["name"]=="labclient"))')"
+    expect "имя устройства из веб-интерфейса" eq "$(ui_json "${WEB_TMP}/r" PUT /api/v1/devices/name "{\"key\":\"${dev_key}\",\"name\":\"Тестовый клиент\"}")" 200
+    expect "  … в списке устройств, имя из аренды сохранено" ui_grep /api/v1/devices '"name":"Тестовый клиент","lease_name":"labclient"'
+    expect "  … и в обращениях" ui_grep '/api/v1/access?hours=1' '"name":"Тестовый клиент"'
+    expect "  … сброс имени" eq "$(ui_json "${WEB_TMP}/r" PUT /api/v1/devices/name "{\"key\":\"${dev_key}\",\"name\":\"\"}")" 200
+    expect "  … снова имя из аренды" ui_grep /api/v1/devices '"name":"labclient"'
 
     log_info "routerd остановлен и снова запущен"
     systemctl stop routerd

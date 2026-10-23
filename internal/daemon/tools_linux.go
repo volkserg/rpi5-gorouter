@@ -240,6 +240,9 @@ func (d *daemon) Devices() []api.DeviceRow {
 		if st, ok := stats[r.Key]; ok {
 			r.Connections, r.Problems, r.Last = st.Connections, st.Problems, st.Last
 		}
+		if n := d.names.Get(r.Key); n != "" {
+			r.LeaseName, r.Name = r.Name, n
+		}
 		seen[r.Key] = true
 		out = append(out, r)
 	}
@@ -272,6 +275,21 @@ func (d *daemon) Devices() []api.DeviceRow {
 	return out
 }
 
+// SetDeviceName — имя устройства из веб-интерфейса (api.Tools).
+func (d *daemon) SetDeviceName(key, name string) error {
+	if d.names == nil {
+		return errors.New("имена устройств недоступны")
+	}
+	if err := d.names.Set(key, name); err != nil {
+		return err
+	}
+	d.Log.Info("имя устройства", "устройство", key, "имя", strings.TrimSpace(name))
+	return nil
+}
+
+// piholeLog — журнал FTL: Pi-hole пишет его в файл, в journald почти пусто.
+const piholeLog = "/var/log/pihole/FTL.log"
+
 // journalUnits — какие журналы можно читать из веб-интерфейса.
 func (d *daemon) journalUnit(id string) (string, bool) {
 	v := d.view.Load()
@@ -299,6 +317,11 @@ func (d *daemon) Journal(ctx context.Context, id, cursor string, lines int) (api
 	unit, ok := d.journalUnit(id)
 	if !ok {
 		return api.Journal{}, fmt.Errorf("журнал %q не поддерживается", id)
+	}
+	if id == "pihole" {
+		if j, err := api.TailLog(piholeLog, cursor, lines, time.Local); err == nil {
+			return j, nil
+		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

@@ -133,7 +133,11 @@ body { padding-bottom: 48px; }
 
 @media (min-width: 1152px) { .content { padding-left: 0; padding-right: 0; } }
 
-.view { display: grid; gap: 16px; }
+/* Элементы сетки сжимаются до ширины экрана: широкое содержимое (панели
+   фильтров, длинные строки) прокручивается внутри себя, а не страница. */
+.view { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+.view > *, .duo > *, .tiles > * { min-width: 0; }
+.content { overflow-x: clip; }
 
 .view > .card, .tiles > .card { padding: 20px; }
 
@@ -761,6 +765,12 @@ h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .01em; }
 .ago { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
 .act { justify-self: end; min-width: 0; }
 .btn.tiny { padding: 4px 10px; font-size: 12px; font-weight: 600; border-radius: 8px; text-decoration: none; }
+
+/* Кольцо загрузки — справа, текст не перекрывает */
+.btn.loading, .add-row .btn.loading, .actions .btn.loading { padding-right: 44px; }
+.btn.tiny.loading { padding-right: 28px; }
+.btn.tiny.loading::after { right: 9px; width: 11px; height: 11px; margin-top: -5.5px; }
+.btn.ghost.loading::after { border-color: rgb(255 255 255 / 0.25); border-top-color: var(--text); }
 .in-list { font-size: 11.5px; color: #93c5fd; white-space: nowrap; }
 .act { position: relative; display: inline-flex; align-items: center; gap: 4px; }
 
@@ -844,6 +854,22 @@ h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .01em; }
 .cand .facts { display: flex; flex-wrap: wrap; gap: 6px; }
 .cand .chooser { flex-basis: 100%; padding: 8px 0 0; border: 0; background: transparent; }
 .cand.leaving, .acc-row.leaving { animation: row-out .35s ease-in forwards; }
+.cand-more { margin-top: 10px; }
+.chip-btn { font: inherit; font-size: 13px; cursor: pointer; transition: border-color .2s, color .2s; }
+.chip-btn::after { content: " ▾"; font-size: 10px; }
+.chip-btn[aria-expanded="true"]::after { content: " ▴"; }
+.chip-btn:hover { color: var(--text); border-color: var(--line-strong); }
+.cand-devs { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px; animation: notice-in .25s ease-out both; }
+.cand-devs a {
+  padding: 3px 10px;
+  font-size: 12.5px;
+  color: #93c5fd;
+  text-decoration: none;
+  border: 1px solid rgb(96 165 250 / 0.3);
+  border-radius: 999px;
+  background: rgb(96 165 250 / 0.06);
+}
+.cand-devs a:hover { border-color: rgb(96 165 250 / 0.6); }
 
 @media (max-width: 900px) {
   .acc-headrow { display: none; }
@@ -1032,8 +1058,7 @@ h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .01em; }
   animation: row-in .4s cubic-bezier(.2, .8, .2, 1) both;
   animation-delay: calc(min(var(--n, 0), 24) * 35ms);
 }
-.dev-card:hover { border-color: rgb(96 165 250 / 0.45); transform: translateY(-2px); box-shadow: 0 12px 30px rgb(0 0 0 / 0.4); }
-.dev-card:focus-visible { outline: 2px solid #bfdbfe; outline-offset: 2px; }
+.dev-card:hover { border-color: rgb(96 165 250 / 0.45); box-shadow: 0 12px 30px rgb(0 0 0 / 0.4); }
 .dev-card.inactive { opacity: .6; }
 .dev-head { display: flex; align-items: center; gap: 10px; }
 .dev-icon {
@@ -1047,15 +1072,49 @@ h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .01em; }
   border: 1px solid rgb(96 165 250 / 0.3);
 }
 .dev-icon svg { width: 18px; height: 18px; fill: none; stroke: #93c5fd; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-.dev-title { min-width: 0; }
-.dev-title b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dev-title span { font-size: 12px; color: var(--muted); }
+.dev-title { min-width: 0; flex: 1; }
+.dev-title .dev-name { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.dev-title b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dev-edit {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  opacity: .45;
+  cursor: pointer;
+  transition: opacity .2s, color .2s, border-color .2s;
+}
+.dev-edit svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.dev-card:hover .dev-edit, .dev-edit:focus-visible { opacity: 1; }
+.dev-edit:hover { color: var(--text); border-color: var(--line-strong); }
+@media (hover: none) { .dev-edit { opacity: .8; } }
+.dev-name input {
+  width: 100%;
+  min-width: 0;
+  padding: 4px 8px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--field);
+  border: 1px solid rgb(96 165 250 / 0.6);
+  border-radius: 8px;
+  outline: none;
+  box-shadow: 0 0 0 3px rgb(96 165 250 / 0.12);
+}
+.dev-name.saving input { opacity: .6; }
+.dev-title > span { display: block; font-size: 12px; color: var(--muted); }
 .dev-meta { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: 12.5px; }
 .dev-meta dt { color: var(--muted); }
 .dev-meta dd { margin: 0; font: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
 .dev-stats { display: flex; gap: 6px; flex-wrap: wrap; }
-.dev-go { position: absolute; right: 14px; top: 16px; font-size: 12px; color: var(--muted); opacity: 0; transition: opacity .2s, transform .2s; }
-.dev-card:hover .dev-go { opacity: 1; transform: translateX(2px); }
+.dev-go { justify-self: start; font-size: 12.5px; color: #93c5fd; text-decoration: none; }
+.dev-go:hover { text-decoration: underline; }
 
 /* --- Журнал --- */
 
@@ -1093,8 +1152,14 @@ h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .01em; }
 .log-line .kv b { font-weight: 400; color: #c4b5fd; }
 .log-line mark { color: #0b1220; background: #93c5fd; border-radius: 2px; }
 @media (max-width: 640px) {
-  .log-line { grid-template-columns: 1fr; gap: 0; padding: 5px 12px; }
-  .log-line .t, .log-line .lvl { display: inline; margin-right: 8px; }
+  .log { height: 68vh; font-size: 12px; }
+  /* Строка записи: время и уровень — в одну строку, текст — под ними с переносом */
+  .log-line { display: block; padding: 6px 12px; }
+  .log-line .t { margin-right: 8px; font-size: 11px; }
+  .log-line .lvl { font-size: 10px; }
+  .log-line .msg { display: block; margin-top: 2px; }
+  .log-line .kv { display: inline; padding: 1px 4px; overflow-wrap: anywhere; word-break: break-all; line-height: 1.7; }
+  #view-journal .access-tools > .segmented, #view-journal .access-tools > .search { flex-basis: 100%; }
 }
 
 /* --- Уведомления --- */

@@ -262,8 +262,10 @@ dnscrypt-proxy, GOST.
   виден: он внутри TLS. Внешний адрес — запрос `TUNNEL_CHECK_URL` (ответ —
   адрес текстом) обоими путями; только по запросу из веб-интерфейса, не чаще
   раза в 10 минут без нажатия кнопки.
-- Состояние сервисов — systemd по D-Bus; журнал — `journalctl -o json`
-  (единственный внешний вызов, как у `rsc logs`), чтение по курсору.
+- Состояние сервисов — systemd по D-Bus; журнал — `journalctl -o json --all`
+  (единственный внешний вызов, как у `rsc logs`), чтение по курсору; журнал
+  Pi-hole — из `/var/log/pihole/FTL.log` (в journald Pi-hole почти не пишет),
+  курсор — inode и смещение, после ротации файл читается заново.
 
 ### Режимы VPN
 
@@ -366,6 +368,7 @@ Linux-специфичное — под `//go:build linux`, проверяетс
 | `/var/lib/routerd-web/` | ключ подписи сессий, самоподписанный сертификат |
 | `/run/routerd/api.sock` | API демона для веб-интерфейса |
 | `/var/lib/routerd/history/` | история обращений устройств (`ACCESS_HISTORY_DAYS`) |
+| `/var/lib/routerd/device_names.json` | имена устройств, заданные в веб-интерфейсе |
 | `/etc/systemd/system/dnscrypt-proxy.socket.d/routerd.conf` | адрес dnscrypt-proxy (`DNSCRYPT_ADDR`) |
 | `/usr/local/bin/routerd`, `rsc`, `router_service_ctl` | бинарник и symlink'и на него |
 

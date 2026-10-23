@@ -55,11 +55,14 @@ type TunnelCheck struct {
 
 // DeviceRow — устройство LAN.
 type DeviceRow struct {
-	Key      string `json:"key"`
-	Name     string `json:"name"`
-	Hostname string `json:"hostname,omitempty"`
-	IP       string `json:"ip"`
-	MAC      string `json:"mac,omitempty"`
+	Key  string `json:"key"`
+	Name string `json:"name"`
+	// LeaseName — имя из аренды DHCP (или адрес), когда Name задан в
+	// веб-интерфейсе; пусто — Name и есть имя из аренды.
+	LeaseName string `json:"lease_name,omitempty"`
+	Hostname  string `json:"hostname,omitempty"`
+	IP        string `json:"ip"`
+	MAC       string `json:"mac,omitempty"`
 	// Kind: lease — аренда DHCP, local — сервис RPi (LOCAL_CLIENTS),
 	// seen — адрес без аренды, замеченный в обращениях.
 	Kind        string    `json:"kind"`
@@ -91,6 +94,8 @@ type Tools interface {
 	// TunnelCheck — последний результат; run — проверить заново.
 	TunnelCheck(ctx context.Context, run bool) TunnelCheck
 	Devices() []DeviceRow
+	// SetDeviceName задаёт устройству имя (пусто — сбросить).
+	SetDeviceName(key, name string) error
 	// Journal — записи журнала юнита (routerd, web, tunnel, pihole,
 	// dnscrypt) после cursor (пусто — последние lines).
 	Journal(ctx context.Context, unit, cursor string, lines int) (Journal, error)
@@ -130,6 +135,21 @@ func toolRoutes(mux *http.ServeMux, b Backend) {
 	})
 	mux.HandleFunc("GET /v1/devices", func(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusOK, b.Devices())
+	})
+	mux.HandleFunc("PUT /v1/devices/name", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Key  string `json:"key"`
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+			WriteJSON(w, http.StatusBadRequest, Error{"некорректный запрос"})
+			return
+		}
+		if err := b.SetDeviceName(req.Key, req.Name); err != nil {
+			WriteJSON(w, http.StatusBadRequest, Error{err.Error()})
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]string{"key": req.Key, "name": strings.TrimSpace(req.Name)})
 	})
 	mux.HandleFunc("GET /v1/journal", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()

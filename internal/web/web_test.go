@@ -302,6 +302,9 @@ func TestStatic(t *testing.T) {
 	if w2 := do(h, "GET", "/static/app.js", "", map[string]string{"If-None-Match": w.Header().Get("ETag")}); w2.Code != http.StatusNotModified {
 		t.Errorf("повторный запрос: %d", w2.Code)
 	}
+	if w := do(h, "GET", "/static/favicon.svg", "", nil); w.Code != http.StatusOK || !strings.HasPrefix(w.Header().Get("Content-Type"), "image/svg+xml") {
+		t.Errorf("значок без входа: %d %s", w.Code, w.Header().Get("Content-Type"))
+	}
 	if w := do(h, "GET", "/static/../web.go", "", nil); w.Code == http.StatusOK {
 		t.Error("выход за пределы static")
 	}

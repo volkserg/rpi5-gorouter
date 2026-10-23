@@ -63,12 +63,23 @@ type fake struct {
 	phase   int
 	tracker *access.Tracker
 	tunnel  api.TunnelCheck
+	names   map[string]string
 }
 
 func parseInt(s string) (int, error) { return strconv.Atoi(s) }
 func itoa(n int) string              { return strconv.Itoa(n) }
 
-func (f *fake) Access(q access.Query) (access.Result, bool) { return f.tracker.Query(q), true }
+func (f *fake) Access(q access.Query) (access.Result, bool) {
+	res := f.tracker.Query(q)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range res.Devices {
+		if n := f.names[res.Devices[i].Key]; n != "" {
+			res.Devices[i].Name = n
+		}
+	}
+	return res, true
+}
 
 // vpnEntries — записи-домены из файла списка демо.
 func (f *fake) vpnEntries() []string {
