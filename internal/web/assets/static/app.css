@@ -1063,6 +1063,16 @@ h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .01em; }
 
 /* Кандидаты */
 .cand-card { border-color: rgb(251 191 36 / 0.25); }
+/* Подсветка блока, к которому вернула прокрутка: рамка и свечение внутри
+   карточки (снаружи боковые стороны обрезал бы контейнер). */
+.landed { animation: landed 1.6s ease-in-out; }
+@keyframes landed {
+  30% {
+    border-color: rgb(251 191 36 / 0.85);
+    box-shadow: 0 30px 80px rgb(0 0 0 / 0.6), inset 0 1px 0 rgb(255 255 255 / 0.04),
+      inset 0 0 0 1px rgb(251 191 36 / 0.4), inset 0 0 40px rgb(251 191 36 / 0.16);
+  }
+}
 .cands { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .cand {
   display: flex;

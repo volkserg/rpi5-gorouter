@@ -481,9 +481,24 @@
     return t ? t.offsetHeight : 0;
   }
 
-  // scrollToEl — плавно к элементу, не пряча его под верхней панелью.
-  function scrollToEl(e) {
-    window.scrollTo({ top: e.getBoundingClientRect().top + window.scrollY - topbarH() - 12, behavior: 'smooth' });
+  // scrollToEl — к элементу, не пряча его под верхней панелью. jump — сразу
+  // и после перестройки страницы (свёрнут длинный список): в следующем кадре,
+  // без подстройки прокрутки браузером (scroll anchoring удерживал бы видимые
+  // строки ниже и прерывал прокрутку), с короткой подсветкой цели.
+  function scrollToEl(e, jump) {
+    function go() {
+      window.scrollTo({ top: e.getBoundingClientRect().top + window.scrollY - topbarH() - 12, behavior: jump ? 'auto' : 'smooth' });
+    }
+    if (!jump) { go(); return; }
+    var root = document.documentElement;
+    root.style.overflowAnchor = 'none';
+    requestAnimationFrame(function () {
+      go();
+      requestAnimationFrame(function () { root.style.overflowAnchor = ''; });
+      e.classList.remove('landed');
+      void e.offsetWidth;
+      e.classList.add('landed');
+    });
   }
 
   // floater — float(on) прилепляет элемент к верху экрана над его местом в
@@ -1035,7 +1050,7 @@
       candAll = !candAll;
       renderCands(true);
       candFloat();
-      if (!candAll) scrollToEl(candCard);
+      if (!candAll) scrollToEl(candCard, true);
     });
 
     function renderCands(force) {

@@ -118,6 +118,7 @@ func newTracker(vpnHas func(string) string) *access.Tracker {
 // run — каждые 2 с новые соединения и снимок «таблицы».
 func (tr *traffic) run() {
 	tr.t.Observe(nil, true)
+	tr.seedCandidates()
 	total := 0
 	for _, s := range demoSites {
 		total += s.weight
@@ -213,5 +214,30 @@ func vpnChecker(read func() []string) func(string) string {
 			}
 		}
 		return ""
+	}
+}
+
+// seedCandidates — сразу после запуска много ресурсов с повторными таймаутами
+// (домены и адреса без DNS): длинный список кандидатов без ожидания трафика.
+func (tr *traffic) seedCandidates() {
+	words := []string{"api", "cdn", "media", "files", "auth", "sync", "push", "edge", "static", "img"}
+	vendors := []string{"vendor", "partner", "service", "cloud", "tools", "apps", "store", "maps"}
+	n := 0
+	for i := 0; i < 40; i++ {
+		ip := netip.AddrFrom4([4]byte{192, 0, 2, byte(100 + i)})
+		name := ""
+		if i%4 != 3 { // каждый четвёртый — по IP, без DNS
+			name = words[i%len(words)] + "." + vendors[i%len(vendors)] + "-" + itoa(i) + ".example"
+		}
+		for k := 0; k < 2+i%5; k++ {
+			d := demoDevices[(i+k)%len(demoDevices)]
+			if name != "" {
+				tr.t.Answer(d.ip, name, []netip.Addr{ip}, time.Hour)
+			}
+			n++
+			// SYN без ответа и запись удалена — таймаут.
+			tr.t.Gone(access.Flow{Proto: access.ProtoTCP, Src: d.ip, Dst: ip, SPort: uint16(20000 + n), DPort: 443,
+				TCPState: 1, OrigPkts: 3, OrigBytes: 180})
+		}
 	}
 }
