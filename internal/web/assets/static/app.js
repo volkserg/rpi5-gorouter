@@ -891,7 +891,9 @@
 
     function rowEl(r, n, devs, changed) {
       var problem = r.timeout + r.refused + r.nodata > 0;
-      var row = el('div', 'acc-row' + (problem ? ' problem' : '') + (changed ? ' changed' : ''));
+      // Полоска — по последнему исходу (история старых версий — по наличию проблем).
+      var last = r.last_status || (problem ? 'timeout' : 'ok');
+      var row = el('div', 'acc-row' + (problem ? ' problem last-' + last : '') + (changed ? ' changed' : ''));
       row.setAttribute('role', 'row');
       row.style.setProperty('--n', n);
       var res = el('div', 'res');

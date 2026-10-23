@@ -44,6 +44,9 @@ type Row struct {
 	SNI string `json:"sni,omitempty"`
 	// Label — запомненное имя адреса (заполняет демон).
 	Label *iplabels.Label `json:"label,omitempty"`
+	// LastStatus — исход последнего соединения: ok, timeout, refused, nodata
+	// (пусто — неизвестен).
+	LastStatus string `json:"last_status,omitempty"`
 }
 
 // Candidate — ресурс, который напрямую не отвечает: кандидат в список VPN.
@@ -164,7 +167,7 @@ func (t *Tracker) Query(q Query) Result {
 		res.Rows = append(res.Rows, Row{
 			Device: k.Device, Resource: k.Resource, IP: ipString(r.IP), Ports: r.Ports, Proto: protoName(r.Protos),
 			Route: k.Route.String(), OK: r.OK, Timeout: r.Timeout, Refused: r.Refused, NoData: r.NoData,
-			Bytes: r.Bytes, Last: r.Last, InList: inList, ListEntry: entry, SNI: r.SNI,
+			Bytes: r.Bytes, Last: r.Last, InList: inList, ListEntry: entry, SNI: r.SNI, LastStatus: lastStatus(r.LastOut),
 		})
 	}
 
@@ -216,6 +219,21 @@ func (t *Tracker) Query(q Query) Result {
 		return res.Candidates[i].Resource < res.Candidates[j].Resource
 	})
 	return res
+}
+
+// lastStatus — исход последнего соединения строкой.
+func lastStatus(x uint8) string {
+	switch x {
+	case uint8(OK) + 1:
+		return "ok"
+	case uint8(Timeout) + 1:
+		return "timeout"
+	case uint8(Refused) + 1:
+		return "refused"
+	case uint8(NoData) + 1:
+		return "nodata"
+	}
+	return ""
 }
 
 // nameOf — имя ресурса или пусто, если ресурс известен только по адресу.

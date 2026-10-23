@@ -421,3 +421,34 @@ func TestSNIHint(t *testing.T) {
 		t.Fatalf("после перезапуска: %+v", r)
 	}
 }
+
+func TestLastStatus(t *testing.T) {
+	dir := t.TempDir()
+	c := newClock()
+	tr := newTestTracker(c, dir)
+	tr.Observe(nil, true)
+	tr.Answer(phone, "site.example", []netip.Addr{webIP}, time.Minute)
+	ok := tcp(phone, 1001, webIP, tcpTimeWait, 6, 9000)
+	ok.OrigPkts, ok.OrigBytes = 4, 600
+	timeout := tcp(phone, 1002, webIP, tcpSynSent, 0, 0)
+	timeout.OrigPkts, timeout.OrigBytes = 3, 180
+	for i := 0; i < 3; i++ {
+		ok.SPort++
+		tr.Gone(ok)
+	}
+	c.add(time.Second)
+	tr.Gone(timeout)
+	if r := rowOf(t, tr, "mac:aa", "site.example"); r.LastStatus != "timeout" || r.OK != 3 || r.Timeout != 1 {
+		t.Fatalf("после таймаута: %+v", r)
+	}
+	c.add(time.Second)
+	ok.SPort++
+	tr.Gone(ok)
+	if r := rowOf(t, tr, "mac:aa", "site.example"); r.LastStatus != "ok" {
+		t.Fatalf("после успеха: %+v", r)
+	}
+	tr.Close()
+	if r := rowOf(t, newTestTracker(c, dir), "mac:aa", "site.example"); r.LastStatus != "ok" {
+		t.Fatalf("после перезапуска: %+v", r)
+	}
+}

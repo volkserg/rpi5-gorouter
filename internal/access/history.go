@@ -49,6 +49,9 @@ type row struct {
 	SNI    string
 	Ports  []uint16
 	Protos uint8 // 1 — TCP, 2 — UDP
+	// LastOut — исход последнего соединения + 1 (0 — неизвестен: история
+	// старых версий).
+	LastOut uint8
 }
 
 type period struct {
@@ -90,6 +93,9 @@ func (r *row) merge(o *row) {
 		r.Last = o.Last
 		if o.IP.IsValid() {
 			r.IP = o.IP
+		}
+		if o.LastOut != 0 {
+			r.LastOut = o.LastOut
 		}
 	}
 	if o.SNI != "" && (r.SNI == "" || o.Last >= r.Last) {
@@ -189,6 +195,7 @@ func (h *history) add(dev Device, res, sni string, ip netip.Addr, port uint16, p
 	}
 	r.Last = now.Unix()
 	r.IP = ip
+	r.LastOut = uint8(out) + 1
 	if sni != "" {
 		r.SNI = sni
 	}
@@ -291,6 +298,7 @@ type fileRow struct {
 	P  []uint16   `json:"p,omitempty"`
 	X  uint8      `json:"x,omitempty"`
 	S  string     `json:"s,omitempty"`
+	LO uint8      `json:"lo,omitempty"`
 }
 
 type fileData struct {
@@ -308,7 +316,7 @@ func (h *history) save(p *period, name string) {
 	fd := fileData{Start: p.start.Unix(), Span: int64(p.span / time.Second), Devices: p.devices, Dropped: p.dropped}
 	for k, r := range p.rows {
 		fd.Rows = append(fd.Rows, fileRow{D: k.Device, R: k.Resource, T: k.Route, OK: r.OK, TO: r.Timeout,
-			RF: r.Refused, ND: r.NoData, B: r.Bytes, L: r.Last, IP: r.IP, P: r.Ports, X: r.Protos, S: r.SNI})
+			RF: r.Refused, ND: r.NoData, B: r.Bytes, L: r.Last, IP: r.IP, P: r.Ports, X: r.Protos, S: r.SNI, LO: r.LastOut})
 	}
 	var b strings.Builder
 	zw := gzip.NewWriter(&b)
@@ -354,7 +362,7 @@ func readPeriod(path string) (*period, error) {
 	p.dropped = fd.Dropped
 	for _, r := range fd.Rows {
 		p.rows[rowKey{r.D, r.R, r.T}] = &row{OK: r.OK, Timeout: r.TO, Refused: r.RF, NoData: r.ND,
-			Bytes: r.B, Last: r.L, IP: r.IP, Ports: r.P, Protos: r.X, SNI: r.S}
+			Bytes: r.B, Last: r.L, IP: r.IP, Ports: r.P, Protos: r.X, SNI: r.S, LastOut: r.LO}
 	}
 	return p, nil
 }
