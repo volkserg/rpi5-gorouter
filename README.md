@@ -57,7 +57,7 @@ Pi-hole и dnscrypt-proxy ставятся автоматически, если 
 проверить и установить:
 
 ```bash
-V=v0.4.6
+V=v0.4.7
 curl -fLO https://github.com/volkserg/rpi5-gorouter/releases/download/$V/routerd-$V-linux-arm64.tar.gz
 curl -fLO https://github.com/volkserg/rpi5-gorouter/releases/download/$V/SHA256SUMS
 sha256sum -c SHA256SUMS
@@ -96,7 +96,7 @@ cd routerd-$V-linux-arm64 && sudo ./install.sh
 # requirements.yml
 collections:
   - name: git+https://github.com/volkserg/rpi5-gorouter.git#/ansible/rpi5_gorouter
-    version: v0.4.6
+    version: v0.4.7
 ```
 
 Пример инвентаря и все переменные — в [README коллекции](ansible/rpi5_gorouter/README.md).
