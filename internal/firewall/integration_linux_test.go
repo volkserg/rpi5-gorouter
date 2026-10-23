@@ -313,3 +313,34 @@ func TestDynamicForget(t *testing.T) {
 	d.Learn([]netip.Addr{a}, time.Minute)
 	mustContain(t, run("nft", "list", "set", "ip", TableName, SetDynamic), "203.0.113.20 timeout 1m")
 }
+
+func TestSNILog(t *testing.T) {
+	c, run := testNS(t)
+	if _, err := Apply(c, spec()); err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplySNILog(c, []string{"eth0", "veth-app"}); err != nil {
+		t.Fatal(err)
+	}
+	out := run("nft", "list", "chain", "ip", TableName, chainSNI)
+	mustContain(t, out, "hook prerouting priority mangle - 1",
+		`iifname "eth0" meta l4proto tcp ct packets 3-10 log group 152 snaplen 2048`,
+		`iifname "veth-app"`)
+	// Повторное применение правил таблицы цепочку не трогает; повторный
+	// ApplySNILog не дублирует правила.
+	if _, err := Apply(c, spec()); err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplySNILog(c, []string{"eth0"}); err != nil {
+		t.Fatal(err)
+	}
+	if out := run("nft", "list", "chain", "ip", TableName, chainSNI); strings.Count(out, "group 152") != 1 {
+		t.Fatalf("правила задвоены:\n%s", out)
+	}
+	if err := ApplySNILog(c, nil); err != nil {
+		t.Fatal(err)
+	}
+	if out := run("nft", "list", "table", "ip", TableName); strings.Contains(out, chainSNI) {
+		t.Fatalf("цепочка не убрана:\n%s", out)
+	}
+}

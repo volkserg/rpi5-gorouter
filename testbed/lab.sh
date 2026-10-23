@@ -482,7 +482,12 @@ EOF
 PUBLIC_ZONES="--address=/vpn.example/203.0.113.20 --address=/vpn.example/2001:db8::20 \
 --address=/direct.example/203.0.113.10 --address=/direct.example/2001:db8::10 \
 --address=/ads.example/203.0.113.99 \
---address=/entry.example/198.51.100.10 --address=/exit.example/198.51.100.6 --address=/#/"
+--address=/entry.example/198.51.100.10 --address=/exit.example/198.51.100.6 \
+--txt-record=10.113.0.203.origin.asn.cymru.com,64500|203.0.113.0/24|ZZ|lab|2024-01-01 \
+--txt-record=AS64500.asn.cymru.com,64500|ZZ|lab|2024-01-01|LAB-NET --address=/#/"
+# TXT в формате Team Cymru — для сведений о владельце адреса в «Проверке».
+# PTR не проверить: на обратные запросы для адресов документации (RFC 6303)
+# Pi-hole (bogusPriv) отвечает NXDOMAIN сам — PTR покрыт unit-тестом ipinfo.
 # --address=/#/ — на всё остальное NXDOMAIN, как настоящий резолвер: иначе
 # dnscrypt-proxy считает сервер «lying resolver» и не использует его.
 PKI_DIR="${SRV_DIR}/pki"
@@ -928,6 +933,7 @@ acc_has_device() { acc_py 'sys.exit(0 if any(x["name"]==sys.argv[1] for x in d["
 acc_in_list() { acc_py 'sys.exit(0 if any(r["in_list"] for r in d["rows"] if r["resource"]==sys.argv[1]) else 1)' "$1"; }
 acc_list_entry() { acc_py 'sys.exit(0 if any(r.get("list_entry")==sys.argv[2] for r in d["rows"] if r["resource"]==sys.argv[1]) else 1)' "$1" "$2"; }
 ui_grep() { ui "${WEB_TMP}/g" "${WEB_URL}$1" >/dev/null && grep -q "$2" "${WEB_TMP}/g"; }
+acc_sni() { acc_py 'sys.exit(0 if any(r.get("sni")==sys.argv[2] for r in d["rows"] if r["resource"]==sys.argv[1]) else 1)' "$1" "$2"; }
 acc_candidate() { acc_py 'sys.exit(0 if any(c["resource"]==sys.argv[1] for c in d["candidates"]) else 1)' "$1"; }
 acc_status_on() { ui "${WEB_TMP}/st" "${WEB_URL}/api/v1/status" >/dev/null && grep -q '"access":true' "${WEB_TMP}/st"; }
 # ui_json <файл ответа> <метод> <путь> <JSON>; ui_text — тело текстом; ui_file <файл ответа> <параметры импорта> <файл>.
@@ -1098,6 +1104,10 @@ cmd_test() {
     expect "проверка direct.example: напрямую — таймаут" grep -q '"direct":{"ok":false,"kind":"timeout"' <<<"${rc}"
     expect "  … через туннель — доступен" grep -q '"tunnel":{"ok":true' <<<"${rc}"
     direct_block off
+    rc="$(api_sock -X POST -H 'Content-Type: application/json' --data '{"target":"203.0.113.10","port":80}' /v1/check)"
+    expect "проверка IP: сеть и оператор (Team Cymru)" \
+        grep -q '"owner":{.*"asn":64500,"as_name":"LAB-NET","prefix":"203.0.113.0/24","country":"ZZ"' <<<"${rc}"
+    expect "  … имя из DNS-ответов устройствам" grep -q '"owner":{"names":\[[^]]*"direct.example"' <<<"${rc}"
     rc="$(api_sock -X POST -H 'Content-Type: application/json' --data '{"target":"vpn.example","port":80}' /v1/check)"
     expect "проверка vpn.example: в списке, оба пути доступны" \
         grep -q '"in_list":true,"list_entry":"vpn.example".*"direct":{"ok":true.*"tunnel":{"ok":true' <<<"${rc}"
@@ -1688,6 +1698,23 @@ cmd_test_web() {
         expect "туннель без данных (порт 81 через туннель)" wait_for 30 acc_grew direct.example tunnel nodata "${b_nd}"
         ctl remove-vpn-ip 203.0.113.10 >/dev/null
     fi
+    # Обращение по IP без запроса к DNS (curl --resolve): ресурс — адрес,
+    # имя из TLS ClientHello — подсказка.
+    expect "цепочка prerouting_sni (первые пакеты TCP → NFLOG)" nsx rpi nft list chain ip router_service prerouting_sni
+    https_get exit www >/dev/null
+    expect "обращение по IP: имя из TLS — www.exit.example" wait_for 15 acc_sni 198.51.100.6 www.exit.example
+    local rc
+    rc="$(api_sock -X POST -H 'Content-Type: application/json' --data '{"target":"198.51.100.6","port":443}' /v1/check)"
+    expect "проверка IP: сертификат сервера (без SNI)" grep -q '"cert":{[^}]*"names":\["www.exit.example","data.exit.example"\]' <<<"${rc}"
+    expect "  … имя из TLS обращений по IP" grep -q '"sni":\["www.exit.example"\]' <<<"${rc}"
+    expect "  … имя адреса запомнено по сертификату" grep -q '"label":{"name":"www.exit.example","source":"cert"' <<<"${rc}"
+    expect "  … плашка у адреса в обращениях" acc_py 'sys.exit(0 if any((r.get("label") or {}).get("name")=="www.exit.example" for r in d["rows"] if r["resource"]=="198.51.100.6") else 1)'
+    expect "имя адреса вручную" eq "$(ui_json "${tmp}/r" PUT /api/v1/iplabels '{"ip":"198.51.100.6","name":"Выходной узел"}')" 200
+    rc="$(api_sock -X POST -H 'Content-Type: application/json' --data '{"target":"198.51.100.6","port":443}' /v1/check)"
+    expect "  … повторная проверка его не меняет" grep -q '"label":{"name":"Выходной узел","source":"user"' <<<"${rc}"
+    expect "  … хранится в /var/lib/routerd/ip_labels.json" grep -q 'Выходной узел' /var/lib/routerd/ip_labels.json
+    expect "сброс всех имён адресов" eq "$(ui /dev/null -X DELETE -H 'X-Routerd-CSRF: 1' "${WEB_URL}/api/v1/iplabels")" 200
+    expect "  … файл пуст" grep -qx '{}' /var/lib/routerd/ip_labels.json
     b_ok="$(acc_sum direct.example direct ok)"
 
     log_info "Сервисы, устройства, журнал"

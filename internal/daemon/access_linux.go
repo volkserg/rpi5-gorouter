@@ -17,6 +17,7 @@ import (
 	"github.com/volkserg/rpi5-gorouter/internal/dhcp"
 	"github.com/volkserg/rpi5-gorouter/internal/domain"
 	"github.com/volkserg/rpi5-gorouter/internal/firewall"
+	"github.com/volkserg/rpi5-gorouter/internal/sni"
 	"github.com/volkserg/rpi5-gorouter/internal/sysctl"
 )
 
@@ -78,6 +79,16 @@ func (d *daemon) syncAccess(cfg *config.Config) {
 		// Без событий учёт работает по опросу, но не видит соединений
 		// короче интервала опроса (например, отказов).
 		d.Log.Warn("учёт обращений: события conntrack недоступны", "ошибка", err)
+	}
+	// Имена из TLS ClientHello — подсказка для обращений по IP без DNS.
+	if err := sni.Listen(ctx, firewall.SNIGroup, func(c sni.Conn, name string) {
+		if d.watchFlow(c.Src, c.Dst) {
+			t.SNI(c.Src, c.Dst, name)
+		}
+	}, func(err error) {
+		d.Log.Warn("учёт обращений: имена из TLS", "ошибка", err)
+	}); err != nil {
+		d.Log.Warn("учёт обращений: имена из TLS недоступны", "ошибка", err)
 	}
 	done := make(chan struct{})
 	d.accessStop = func() { cancel(); <-done }

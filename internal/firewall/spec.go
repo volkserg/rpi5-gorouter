@@ -25,6 +25,7 @@ const (
 	chainMangle     = "prerouting_mangle"
 	chainOutputNAT  = "output_nat"
 	chainOutput     = "output_route"
+	chainSNI        = "prerouting_sni"
 
 	// Mark — fwmark пакетов, идущих в туннель (режимы tproxy и route);
 	// по нему policy routing выбирает таблицу RouteTable.
@@ -35,6 +36,11 @@ const (
 	// туннеля и ресурса): их TCP идёт в туннель, как трафик устройств LAN.
 	// Собственный трафик RPi правила LAN не затрагивают.
 	ProbeMark = 0x53
+	// SNIGroup — группа NFLOG, в которую попадают первые пакеты соединений
+	// TCP из LAN (имя сайта из TLS ClientHello, см. ApplySNILog).
+	SNIGroup = 152
+	// SNISnaplen — сколько байт пакета копировать в NFLOG.
+	SNISnaplen = 2048
 )
 
 // Mode — способ отправки трафика к адресам из списков в туннель.
@@ -78,9 +84,9 @@ type Local struct {
 	Net   netip.Prefix
 }
 
-// inIfaces — интерфейсы, трафик с которых идёт через правила: LAN и veth
+// InIfaces — интерфейсы, трафик с которых идёт через правила: LAN и veth
 // локальных сервисов.
-func (s Spec) inIfaces() []string {
+func (s Spec) InIfaces() []string {
 	ifs := []string{s.Iface}
 	for _, l := range s.Locals {
 		ifs = append(ifs, l.Iface)

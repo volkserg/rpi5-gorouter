@@ -1,7 +1,7 @@
 // Command webdemo — веб-интерфейс routerd на машине разработчика (macOS или
 // Linux) с поддельным демоном: посмотреть страницы без стенда.
 //
-//	go run ./testbed/webdemo            https://127.0.0.1:8443, вход demo / demo-password
+//	go run ./testbed/webdemo            https://127.0.0.1:8443, вход demo / demo
 //	go run ./testbed/webdemo -listen 127.0.0.1:9443
 //
 // Состояние туннеля меняется само (доступен → недоступен → перехват снят),
@@ -25,13 +25,14 @@ import (
 
 	"github.com/volkserg/rpi5-gorouter/internal/access"
 	"github.com/volkserg/rpi5-gorouter/internal/api"
+	"github.com/volkserg/rpi5-gorouter/internal/iplabels"
 	"github.com/volkserg/rpi5-gorouter/internal/lists"
 	"github.com/volkserg/rpi5-gorouter/internal/web"
 )
 
 const (
 	demoUser     = "demo"
-	demoPassword = "demo-password"
+	demoPassword = "demo"
 )
 
 // Примерные списки демо (каталог конфигов создаётся заново при каждом запуске).
@@ -64,6 +65,7 @@ type fake struct {
 	tracker *access.Tracker
 	tunnel  api.TunnelCheck
 	names   map[string]string
+	labels  *iplabels.Store
 }
 
 func parseInt(s string) (int, error) { return strconv.Atoi(s) }
@@ -78,6 +80,21 @@ func (f *fake) Access(q access.Query) (access.Result, bool) {
 			res.Devices[i].Name = n
 		}
 	}
+	label := func(res string) *iplabels.Label {
+		if ip, err := netip.ParseAddr(res); err == nil {
+			if l, ok := f.labels.Get(ip); ok {
+				return &l
+			}
+		}
+		return nil
+	}
+	for i := range res.Rows {
+		res.Rows[i].Label = label(res.Rows[i].Resource)
+	}
+	for i := range res.Candidates {
+		res.Candidates[i].Label = label(res.Candidates[i].Resource)
+	}
+	res.Labels = f.labels.Len()
 	return res, true
 }
 
@@ -167,6 +184,7 @@ func main() {
 		}
 	}
 	f := &fake{dir: dir, started: time.Now().Add(-26 * time.Hour)}
+	f.labels, _ = iplabels.Open(dir)
 	vpnHas := vpnChecker(f.vpnEntries)
 	f.tracker = newTracker(vpnHas)
 	go (&traffic{t: f.tracker, vpnHas: vpnHas}).run()

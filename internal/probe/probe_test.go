@@ -2,7 +2,14 @@ package probe
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"errors"
+	"math/big"
 	"net"
 	"net/netip"
 	"strings"
@@ -89,5 +96,41 @@ func TestResourceFailures(t *testing.T) {
 	other := func(context.Context, netip.AddrPort) (net.Conn, error) { return nil, errors.New("что-то") }
 	if p := Resource(context.Background(), other, "", site); p.OK || p.Kind != "other" || p.Error != "соединение: что-то" {
 		t.Errorf("прочее: %+v", p)
+	}
+}
+
+func TestResourceCert(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "*.cdn.example", Organization: []string{"Example CDN Inc."}},
+		Issuer:       pkix.Name{CommonName: "Example CA"},
+		DNSNames:     []string{"*.cdn.example", "CDN.example"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}
+	p := Resource(context.Background(), pipeDial(func(s net.Conn) {
+		tc := tls.Server(s, cfg)
+		if tc.Handshake() != nil {
+			return
+		}
+		buf := make([]byte, 512)
+		tc.Read(buf)
+		tc.Write([]byte("HTTP/1.1 403 Forbidden\r\n\r\n"))
+	}), "", netip.MustParseAddrPort("203.0.113.10:443"))
+	c := p.Cert
+	if c == nil || c.Subject != "*.cdn.example" || c.Org != "Example CDN Inc." || len(c.Names) != 2 || c.Names[1] != "cdn.example" {
+		t.Fatalf("сертификат: %+v (%+v)", c, p)
+	}
+	if p.Kind != "http" {
+		t.Fatalf("сертификат есть и при отказе: %+v", p)
 	}
 }

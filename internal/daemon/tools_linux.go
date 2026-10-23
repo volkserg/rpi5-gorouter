@@ -23,6 +23,8 @@ import (
 	"github.com/volkserg/rpi5-gorouter/internal/api"
 	"github.com/volkserg/rpi5-gorouter/internal/domain"
 	"github.com/volkserg/rpi5-gorouter/internal/firewall"
+	"github.com/volkserg/rpi5-gorouter/internal/ipinfo"
+	"github.com/volkserg/rpi5-gorouter/internal/iplabels"
 	"github.com/volkserg/rpi5-gorouter/internal/probe"
 	"github.com/volkserg/rpi5-gorouter/internal/services"
 )
@@ -110,15 +112,98 @@ func (d *daemon) Check(ctx context.Context, req api.CheckRequest) (api.CheckResu
 	res.Route = d.routeOf(access.ProtoTCP, ip, port).String()
 
 	var wg sync.WaitGroup
-	wg.Add(1)
+	wg.Add(2)
 	go func() { defer wg.Done(); res.Direct = probe.Resource(ctx, probeDial(false), res.Name, ap) }()
+	go func() { defer wg.Done(); res.Owner = d.owner(ctx, ip, res.Name) }()
 	if d.tunnelUsable() {
 		res.Tunnel = probe.Resource(ctx, probeDial(true), res.Name, ap)
 	} else {
 		res.Tunnel = errNoTunnel
 	}
 	wg.Wait()
+	if res.Name == "" {
+		res.Label = d.rememberIP(ip, &res)
+	}
 	return res, nil
+}
+
+// rememberIP запоминает имя проверенного адреса: устройства обращаются к нему
+// без DNS, и в «Обращениях» он останется адресом — с этим именем рядом.
+// Заданное вручную не меняется.
+func (d *daemon) rememberIP(ip netip.Addr, res *api.CheckResult) *iplabels.Label {
+	var certNames []string
+	var subject, ptr, as string
+	for _, p := range []probe.Path{res.Direct, res.Tunnel} {
+		if p.Cert != nil {
+			certNames, subject = p.Cert.Names, p.Cert.Subject
+			break
+		}
+	}
+	if res.Owner != nil {
+		ptr, as = res.Owner.PTR, res.Owner.ASName
+	}
+	if name, src := iplabels.Guess(certNames, subject, ptr, as); name != "" {
+		l, err := d.labels.Auto(ip, name, src)
+		if err != nil {
+			d.Log.Warn("имя адреса не сохранено", "адрес", ip, "ошибка", err)
+			return nil
+		}
+		return &l
+	}
+	if l, ok := d.labels.Get(ip); ok {
+		return &l
+	}
+	return nil
+}
+
+// SetIPLabel — имя адреса из веб-интерфейса (api.Tools).
+func (d *daemon) SetIPLabel(ip netip.Addr, name string) error {
+	if d.labels == nil {
+		return errors.New("имена адресов недоступны")
+	}
+	if err := d.labels.Set(ip, name); err != nil {
+		return err
+	}
+	d.Log.Info("имя адреса", "адрес", ip, "имя", strings.TrimSpace(name))
+	return nil
+}
+
+// ResetIPLabels — забыть имена всех адресов (api.Tools).
+func (d *daemon) ResetIPLabels() (int, error) {
+	if d.labels == nil {
+		return 0, errors.New("имена адресов недоступны")
+	}
+	n, err := d.labels.Reset()
+	if err == nil {
+		d.Log.Info("имена адресов сброшены", "было", n)
+	}
+	return n, err
+}
+
+// owner — кому может принадлежать адрес: имена из DNS-ответов устройствам
+// (кроме проверяемого), имена из TLS при обращениях по IP, PTR и автономная
+// система.
+func (d *daemon) owner(ctx context.Context, ip netip.Addr, name string) *ipinfo.Info {
+	info := ipinfo.Lookup(ctx, localDNS, ip)
+	if t := d.tracker.Load(); t != nil {
+		for _, n := range t.NamesOf(ip) {
+			if n != name {
+				info.Names = append(info.Names, n)
+			}
+		}
+		info.SNI = t.SNIOf(ip)
+	}
+	if info.Empty() {
+		return nil
+	}
+	return &info
+}
+
+// localDNS — запрос к DNS routerd.
+func localDNS(ctx context.Context, q *dns.Msg) (*dns.Msg, error) {
+	c := &dns.Client{Timeout: ipinfo.Timeout}
+	resp, _, err := c.ExchangeContext(ctx, q, "127.0.0.1:53")
+	return resp, err
 }
 
 // resolve — A-записи через DNS routerd (с его правилами: override, список).

@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/volkserg/rpi5-gorouter/internal/iplabels"
 )
 
 // Query — выборка из истории.
@@ -37,6 +39,11 @@ type Row struct {
 	InList   bool     `json:"in_list"`
 	// ListEntry — запись списка VPN, которая покрывает ресурс.
 	ListEntry string `json:"list_entry,omitempty"`
+	// SNI — ресурс известен только по адресу (устройство не спрашивало имя у
+	// DNS routerd), а в TLS ClientHello оно назвало это имя.
+	SNI string `json:"sni,omitempty"`
+	// Label — запомненное имя адреса (заполняет демон).
+	Label *iplabels.Label `json:"label,omitempty"`
 }
 
 // Candidate — ресурс, который напрямую не отвечает: кандидат в список VPN.
@@ -50,6 +57,9 @@ type Candidate struct {
 	DeviceKeys []string `json:"device_keys"`
 	Last       int64    `json:"last"`
 	Suggest    []string `json:"suggest"`
+	// SNI, Label — как у Row.
+	SNI   string          `json:"sni,omitempty"`
+	Label *iplabels.Label `json:"label,omitempty"`
 }
 
 // Totals — сводка выборки.
@@ -69,6 +79,8 @@ type Result struct {
 	Totals     Totals       `json:"totals"`
 	Since      int64        `json:"since"`
 	Retention  int64        `json:"retention"`
+	// Labels — сколько адресов с запомненными именами (заполняет демон).
+	Labels int `json:"labels"`
 }
 
 // DeviceInfo — устройство в выборке.
@@ -124,6 +136,9 @@ func (t *Tracker) Query(q Query) Result {
 			if r.Last >= ca.c.Last {
 				ca.c.Last, ca.ip = r.Last, r.IP
 			}
+			if r.SNI != "" {
+				ca.c.SNI = r.SNI
+			}
 		}
 
 		if q.Device != "" && k.Device != q.Device {
@@ -136,6 +151,7 @@ func (t *Tracker) Query(q Query) Result {
 			continue
 		}
 		if search != "" && !strings.Contains(k.Resource, search) && !strings.Contains(r.IP.String(), search) &&
+			!strings.Contains(r.SNI, search) &&
 			!strings.Contains(strings.ToLower(devs[k.Device].Name), search) {
 			continue
 		}
@@ -148,7 +164,7 @@ func (t *Tracker) Query(q Query) Result {
 		res.Rows = append(res.Rows, Row{
 			Device: k.Device, Resource: k.Resource, IP: ipString(r.IP), Ports: r.Ports, Proto: protoName(r.Protos),
 			Route: k.Route.String(), OK: r.OK, Timeout: r.Timeout, Refused: r.Refused, NoData: r.NoData,
-			Bytes: r.Bytes, Last: r.Last, InList: inList, ListEntry: entry,
+			Bytes: r.Bytes, Last: r.Last, InList: inList, ListEntry: entry, SNI: r.SNI,
 		})
 	}
 

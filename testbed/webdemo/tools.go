@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/rand/v2"
 	"net/netip"
 	"strings"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/volkserg/rpi5-gorouter/internal/access"
 	"github.com/volkserg/rpi5-gorouter/internal/api"
+	"github.com/volkserg/rpi5-gorouter/internal/ipinfo"
+	"github.com/volkserg/rpi5-gorouter/internal/iplabels"
 	"github.com/volkserg/rpi5-gorouter/internal/probe"
 )
 
@@ -84,7 +87,87 @@ func (f *fake) Check(_ context.Context, req api.CheckRequest) (api.CheckResult, 
 	if !f.Status().TunnelUp {
 		res.Tunnel = probe.Path{Kind: "other", Error: "туннель недоступен"}
 	}
+	res.Owner = f.owner(ip, res.Name)
+	var cert *probe.Cert
+	if req.Port == 443 {
+		cert = demoCert(res.Name, ip)
+		if res.Direct.Kind != "timeout" {
+			res.Direct.Cert = cert
+		}
+		if res.Tunnel.OK || res.Tunnel.Kind == "http" {
+			res.Tunnel.Cert = cert
+		}
+	}
+	if res.Name == "" {
+		var names []string
+		var subj, ptr, as string
+		if cert != nil {
+			names, subj = cert.Names, cert.Subject
+		}
+		if res.Owner != nil {
+			ptr, as = res.Owner.PTR, res.Owner.ASName
+		}
+		if name, src := iplabels.Guess(names, subj, ptr, as); name != "" {
+			if l, err := f.labels.Auto(ip, name, src); err == nil {
+				res.Label = &l
+			}
+		}
+	}
 	return res, nil
+}
+
+func (f *fake) SetIPLabel(ip netip.Addr, name string) error { return f.labels.Set(ip, name) }
+func (f *fake) ResetIPLabels() (int, error)                 { return f.labels.Reset() }
+
+// demoCert — сертификат сервера: на имя ресурса, по IP — на имя из TLS
+// или общий сертификат оператора.
+func demoCert(name string, ip netip.Addr) *probe.Cert {
+	if name == "" {
+		for _, s := range demoSites {
+			if s.ip == ip {
+				name = s.sni
+			}
+		}
+	}
+	if name == "" {
+		return &probe.Cert{Subject: "*.edge.example-hosting.example", Org: "Example Hosting B.V.",
+			Names: []string{"*.edge.example-hosting.example", "edge.example-hosting.example"}, Issuer: "Example Trust CA"}
+	}
+	parent := name
+	if i := strings.Index(name, "."); i > 0 && strings.Count(name, ".") > 1 {
+		parent = name[i+1:]
+	}
+	return &probe.Cert{Subject: "*." + parent, Names: []string{"*." + parent, parent}, Issuer: "Example Trust CA"}
+}
+
+// demoNets — операторы сетей демо (номера AS из диапазона для документации).
+var demoNets = map[[3]byte]struct {
+	asn  uint32
+	name string
+	cc   string
+}{
+	{203, 0, 113}:  {64500, "EXAMPLE-HOSTING", "NL"},
+	{198, 51, 100}: {64501, "EXAMPLE-CDN", "US"},
+	{192, 0, 2}:    {64502, "EXAMPLE-STORAGE", "DE"},
+}
+
+func (f *fake) owner(ip netip.Addr, name string) *ipinfo.Info {
+	var info ipinfo.Info
+	for _, n := range f.tracker.NamesOf(ip) {
+		if n != name {
+			info.Names = append(info.Names, n)
+		}
+	}
+	b := ip.As16()
+	if n, ok := demoNets[[3]byte{b[12], b[13], b[14]}]; ok && ip.Is4() {
+		info.ASN, info.ASName, info.Country = n.asn, n.name, n.cc
+		info.Prefix = netip.PrefixFrom(ip, 24).Masked().String()
+		info.PTR = fmt.Sprintf("host-%d.%s.example", b[15], strings.ToLower(n.name))
+	}
+	if info.Empty() {
+		return nil
+	}
+	return &info
 }
 
 func (f *fake) TunnelCheck(_ context.Context, run bool) api.TunnelCheck {

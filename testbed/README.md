@@ -59,7 +59,7 @@ orb -m routerd-lab sudo ./fw.test -test.v
 ## Веб-интерфейс без стенда
 
 ```bash
-go run ./testbed/webdemo   # https://127.0.0.1:8443, вход demo / demo-password
+go run ./testbed/webdemo   # https://127.0.0.1:8443, вход demo / demo
 ```
 
 Поддельный демон: состояние туннеля меняется каждые 20 с (`-period`), чтобы

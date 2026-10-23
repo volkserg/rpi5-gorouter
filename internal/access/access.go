@@ -12,6 +12,7 @@ package access
 import (
 	"log/slog"
 	"net/netip"
+	"sort"
 	"sync"
 	"time"
 )
@@ -139,7 +140,10 @@ type flowState struct {
 type Tracker struct {
 	o     Options
 	names *names
-	hist  *history
+	// sni — имена из TLS ClientHello: подсказка для соединений по IP без
+	// запроса к DNS routerd (ресурсом остаётся адрес).
+	sni  *names
+	hist *history
 
 	mu      sync.Mutex
 	flows   map[flowKey]*flowState
@@ -157,7 +161,7 @@ func New(o Options) *Tracker {
 	if o.InList == nil {
 		o.InList = func(string, netip.Addr) (string, bool) { return "", false }
 	}
-	t := &Tracker{o: o, names: newNames(), flows: map[flowKey]*flowState{}}
+	t := &Tracker{o: o, names: newNames(), sni: newNames(), flows: map[flowKey]*flowState{}}
 	t.hist = newHistory(o.Dir, o.Retention, o.Log)
 	t.hist.load(o.Now())
 	return t
@@ -167,6 +171,30 @@ func New(o Options) *Tracker {
 // получают имя ресурса.
 func (t *Tracker) Answer(client netip.Addr, name string, addrs []netip.Addr, ttl time.Duration) {
 	t.names.add(client, name, addrs, ttl, t.o.Now())
+}
+
+// NamesOf — имена из DNS-ответов, под которыми устройства получали адрес.
+func (t *Tracker) NamesOf(ip netip.Addr) []string {
+	return t.names.of(ip, t.o.Now(), 8)
+}
+
+// SNI запоминает имя сайта из TLS ClientHello соединения устройства client
+// с адресом dst.
+func (t *Tracker) SNI(client, dst netip.Addr, name string) {
+	t.sni.add(client, name, []netip.Addr{dst}, 0, t.o.Now())
+}
+
+// SNIOf — имена из TLS ClientHello, с которыми устройства соединялись с адресом.
+func (t *Tracker) SNIOf(ip netip.Addr) []string {
+	return t.sni.of(ip, t.o.Now(), 8)
+}
+
+// hint — имя из TLS для соединения без имени из DNS.
+func (t *Tracker) hint(st *flowState, f *Flow, now time.Time) string {
+	if st.name != "" {
+		return ""
+	}
+	return t.sni.lookup(f.Src, f.Dst, now)
 }
 
 // Observe принимает снимок таблицы conntrack. acct — ядро считает пакеты и
@@ -209,6 +237,7 @@ func (t *Tracker) Observe(flows []Flow, acct bool) {
 		}
 	}
 	t.names.prune(now)
+	t.sni.prune(now)
 }
 
 // Gone — событие удаления записи conntrack с итоговыми счётчиками.
@@ -256,7 +285,7 @@ func (t *Tracker) finish(k flowKey, st *flowState, f *Flow, now time.Time) {
 		t.decide(st, final(st, f, st.acct), now)
 	}
 	if st.device.Key != "" && f.ReplyBytes > 0 {
-		t.hist.addBytes(st.device, st.resource(k.dst), st.route, f.ReplyBytes, now)
+		t.hist.addBytes(st.device, st.resource(k.dst), t.hint(st, f, now), st.route, f.ReplyBytes, now)
 	}
 	delete(t.flows, k)
 }
@@ -290,7 +319,7 @@ func (t *Tracker) decide(st *flowState, v verdict, now time.Time) {
 	st.decided = true
 	if v.act == count {
 		f := &st.last
-		t.hist.add(st.device, st.resource(f.Dst), f.Dst, f.DPort, f.Proto, st.route, v.out, now)
+		t.hist.add(st.device, st.resource(f.Dst), t.hint(st, f, now), f.Dst, f.DPort, f.Proto, st.route, v.out, now)
 	}
 }
 
@@ -455,6 +484,28 @@ func (n *names) lookup(client, dst netip.Addr, now time.Time) string {
 		return e.name
 	}
 	return ""
+}
+
+// of — все имена, под которыми адрес получали устройства (не больше max).
+func (n *names) of(dst netip.Addr, now time.Time, max int) []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	var out []string
+	seen := map[string]bool{}
+	add := func(e nameEntry, ok bool) {
+		if ok && e.exp.After(now) && !seen[e.name] && len(out) < max {
+			seen[e.name] = true
+			out = append(out, e.name)
+		}
+	}
+	e, ok := n.global[dst]
+	add(e, ok)
+	for _, m := range n.perClient {
+		e, ok := m[dst]
+		add(e, ok)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (n *names) prune(now time.Time) {

@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -38,6 +39,37 @@ type Path struct {
 	Detail  string `json:"detail,omitempty"`
 	Connect int64  `json:"connect_ms"`
 	Total   int64  `json:"total_ms"`
+	// Cert — сертификат сервера (порт 443; есть и при неудаче после
+	// рукопожатия): на кого выписан — подсказка, чей это адрес.
+	Cert *Cert `json:"cert,omitempty"`
+}
+
+// Cert — сведения из сертификата сервера.
+type Cert struct {
+	Subject string   `json:"subject,omitempty"` // CN
+	Org     string   `json:"org,omitempty"`     // организация владельца (у OV/EV)
+	Names   []string `json:"names,omitempty"`   // SAN
+	Issuer  string   `json:"issuer,omitempty"`
+}
+
+// maxCertNames — сколько имён из SAN показывать.
+const maxCertNames = 12
+
+func certOf(c *x509.Certificate) *Cert {
+	out := &Cert{Subject: c.Subject.CommonName, Issuer: c.Issuer.CommonName}
+	if len(c.Subject.Organization) > 0 {
+		out.Org = c.Subject.Organization[0]
+	}
+	if len(c.Issuer.Organization) > 0 {
+		out.Issuer = c.Issuer.Organization[0]
+	}
+	for _, n := range c.DNSNames {
+		if len(out.Names) == maxCertNames {
+			break
+		}
+		out.Names = append(out.Names, strings.ToLower(n))
+	}
+	return out
 }
 
 // Resource проверяет ресурс: TCP-соединение с addr, для порта 443 —
@@ -68,10 +100,16 @@ func Resource(ctx context.Context, dial Dial, name string, addr netip.AddrPort) 
 		if name != "" {
 			cfg.ServerName = name
 		}
+		cfg.VerifyConnection = func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) > 0 {
+				p.Cert = certOf(cs.PeerCertificates[0])
+			}
+			return nil
+		}
 		tc := tls.Client(conn, cfg)
 		if err := tc.HandshakeContext(ctx); err != nil {
 			r := fail(err, "TLS", start)
-			r.Connect = p.Connect
+			r.Connect, r.Cert = p.Connect, p.Cert
 			if r.Kind == "other" {
 				r.Kind = "tls"
 			}
@@ -82,13 +120,13 @@ func Resource(ctx context.Context, dial Dial, name string, addr netip.AddrPort) 
 	}
 	if _, err := fmt.Fprintf(conn, "GET / HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\nAccept: */*\r\nConnection: close\r\n\r\n", host, userAgent); err != nil {
 		r := fail(err, "запрос", start)
-		r.Connect = p.Connect
+		r.Connect, r.Cert = p.Connect, p.Cert
 		return r
 	}
 	line, err := bufio.NewReader(conn).ReadString('\n')
 	if err != nil && line == "" {
 		r := fail(err, "ответ", start)
-		r.Connect = p.Connect
+		r.Connect, r.Cert = p.Connect, p.Cert
 		return r
 	}
 	p.Total = ms(time.Since(start))

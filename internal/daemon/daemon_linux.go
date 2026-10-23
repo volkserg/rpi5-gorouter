@@ -36,6 +36,7 @@ import (
 	"github.com/volkserg/rpi5-gorouter/internal/dnsproxy"
 	"github.com/volkserg/rpi5-gorouter/internal/domain"
 	"github.com/volkserg/rpi5-gorouter/internal/firewall"
+	"github.com/volkserg/rpi5-gorouter/internal/iplabels"
 	"github.com/volkserg/rpi5-gorouter/internal/lists"
 	"github.com/volkserg/rpi5-gorouter/internal/pihole"
 	"github.com/volkserg/rpi5-gorouter/internal/routing"
@@ -109,6 +110,8 @@ type daemon struct {
 	tunCheck tunnelChecks
 	// names — имена устройств, заданные в веб-интерфейсе.
 	names *devnames.Store
+	// labels — запомненные имена IP-адресов (проверка IP, веб-интерфейс).
+	labels *iplabels.Store
 }
 
 type applyRequest struct {
@@ -136,6 +139,9 @@ func Run(ctx context.Context, o Options) error {
 	d := &daemon{Options: o, nft: nft, nl: nl, dyn: dyn, started: time.Now(), applyReq: make(chan applyRequest)}
 	if d.names, err = devnames.Open(o.StateDir); err != nil {
 		o.Log.Warn("имена устройств не прочитаны", "ошибка", err)
+	}
+	if d.labels, err = iplabels.Open(o.StateDir); err != nil {
+		o.Log.Warn("имена адресов не прочитаны", "ошибка", err)
 	}
 
 	sigs := make(chan os.Signal, 4)
@@ -265,6 +271,15 @@ func (d *daemon) apply() error {
 	if recreated {
 		d.Log.Warn("таблица nftables пересоздана: адреса, узнанные из DNS, сброшены")
 	}
+	// Имена из TLS для учёта обращений — отдельно: без nfnetlink_log в ядре
+	// остальное работает.
+	var sniIfaces []string
+	if cfg.AccessTracking() {
+		sniIfaces = spec.InIfaces()
+	}
+	if err := firewall.ApplySNILog(d.nft, sniIfaces); err != nil {
+		d.Log.Warn("учёт обращений: имена из TLS недоступны", "ошибка", err)
+	}
 	tunUp, err := d.applyRouting(spec)
 	if err != nil {
 		return err
@@ -334,6 +349,22 @@ func (d *daemon) Access(q access.Query) (access.Result, bool) {
 			res.Devices[i].Name = n
 		}
 	}
+	// Запомненные имена — у ресурсов-адресов (обращения без DNS).
+	label := func(res string) *iplabels.Label {
+		if ip, err := netip.ParseAddr(res); err == nil {
+			if l, ok := d.labels.Get(ip); ok {
+				return &l
+			}
+		}
+		return nil
+	}
+	for i := range res.Rows {
+		res.Rows[i].Label = label(res.Rows[i].Resource)
+	}
+	for i := range res.Candidates {
+		res.Candidates[i].Label = label(res.Candidates[i].Resource)
+	}
+	res.Labels = d.labels.Len()
 	return res, true
 }
 

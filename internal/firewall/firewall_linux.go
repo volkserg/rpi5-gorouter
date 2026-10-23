@@ -43,6 +43,47 @@ func Apply(c *nftables.Conn, s Spec) (recreated bool, err error) {
 	return true, nil
 }
 
+// ApplySNILog ставит (ifaces не пусто) или убирает цепочку prerouting_sni:
+// первые пакеты каждого соединения TCP с этих интерфейсов (3–10-й пакет
+// соединения в обе стороны — после рукопожатия, там ClientHello) копируются
+// в группу NFLOG SNIGroup. Отдельной транзакцией после Apply: если в ядре
+// нет nfnetlink_log, остальные правила не страдают.
+func ApplySNILog(c *nftables.Conn, ifaces []string) error {
+	if !tableExists(c) {
+		return fmt.Errorf("таблицы %s нет", TableName)
+	}
+	t := table()
+	chains, err := c.ListChainsOfTableFamily(nftables.TableFamilyIPv4)
+	if err != nil {
+		return err
+	}
+	exists := false
+	for _, ch := range chains {
+		if ch.Table.Name == TableName && ch.Name == chainSNI {
+			exists = true
+		}
+	}
+	if len(ifaces) == 0 {
+		if !exists {
+			return nil
+		}
+		c.DelChain(&nftables.Chain{Name: chainSNI, Table: t})
+		return c.Flush()
+	}
+	prio := *nftables.ChainPriorityMangle - 1
+	ch := c.AddChain(&nftables.Chain{Name: chainSNI, Table: t, Type: nftables.ChainTypeFilter,
+		Hooknum: nftables.ChainHookPrerouting, Priority: &prio})
+	c.FlushChain(ch)
+	for _, in := range ifaces {
+		c.AddRule(&nftables.Rule{Table: t, Chain: ch, Exprs: concat(ifaceIn(in), l4proto(unix.IPPROTO_TCP),
+			ctPacketsBetween(3, 10), nflog(SNIGroup, SNISnaplen))})
+	}
+	if err := c.Flush(); err != nil {
+		return fmt.Errorf("цепочка %s: %w", chainSNI, err)
+	}
+	return nil
+}
+
 // setsCompatible сверяет параметры существующих set'ов со Spec.
 func setsCompatible(c *nftables.Conn, s Spec) bool {
 	sets, err := c.GetSets(table())
@@ -125,7 +166,7 @@ func build(c *nftables.Conn, s Spec) {
 	sets := []*nftables.Set{static, dynamic}
 	// Трафик LAN и локальных сервисов (veth) обрабатывается одинаково;
 	// правила повторяются для каждого входного интерфейса.
-	ins := s.inIfaces()
+	ins := s.InIfaces()
 
 	if !s.Bypass {
 		switch s.Mode {
@@ -370,6 +411,21 @@ func ctMarkIs(m uint32) []expr.Any {
 		&expr.Ct{Register: 1, Key: expr.CtKeyMARK},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(m)},
 	}
+}
+
+// ctPacketsBetween — ct packets lo-hi (пакеты соединения в обе стороны).
+func ctPacketsBetween(lo, hi uint64) []expr.Any {
+	return []expr.Any{
+		&expr.Ct{Register: 1, Key: expr.CtKeyPKTS},
+		&expr.Byteorder{SourceRegister: 1, DestRegister: 1, Op: expr.ByteorderHton, Len: 8, Size: 8},
+		&expr.Cmp{Op: expr.CmpOpGte, Register: 1, Data: binaryutil.BigEndian.PutUint64(lo)},
+		&expr.Cmp{Op: expr.CmpOpLte, Register: 1, Data: binaryutil.BigEndian.PutUint64(hi)},
+	}
+}
+
+// nflog — log group g snaplen n.
+func nflog(g uint16, n uint32) []expr.Any {
+	return []expr.Any{&expr.Log{Key: 1<<unix.NFTA_LOG_GROUP | 1<<unix.NFTA_LOG_SNAPLEN, Group: g, Snaplen: n}}
 }
 
 // tcpSyn — tcp flags syn.

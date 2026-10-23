@@ -660,6 +660,48 @@ h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .01em; }
 .live.paused i { background: var(--muted); box-shadow: none; }
 .live.paused i::after { animation: none; }
 .live.tick i { animation: pop .4s ease-out; }
+.live.stopped { color: var(--warn); }
+.live.stopped i { background: var(--warn); box-shadow: 0 0 8px rgb(251 191 36 / 0.5); }
+
+.live-ctl { display: inline-flex; align-items: center; gap: 6px; }
+.live-ctl .live { margin-right: 4px; }
+.live-ctl.float {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 25;
+  padding: 7px 8px 7px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: rgb(12 12 14 / 0.82);
+  box-shadow: 0 14px 40px rgb(0 0 0 / 0.55);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  animation: float-in .3s cubic-bezier(.2, .9, .3, 1.2) both;
+}
+.live-float .toasts { bottom: 72px; }
+@keyframes float-in { from { opacity: 0; transform: translateY(16px) scale(.94); } }
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--field);
+  color: var(--muted);
+  cursor: pointer;
+  transition: color .2s, border-color .2s, background .2s, box-shadow .2s;
+}
+.icon-btn:hover { color: var(--text); border-color: var(--line-strong); }
+.icon-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.icon-btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.icon-btn .i-play { display: none; fill: currentColor; }
+.icon-btn[aria-pressed="true"] { color: var(--warn); border-color: rgb(251 191 36 / 0.45); background: rgb(251 191 36 / 0.08); box-shadow: 0 0 12px rgb(251 191 36 / 0.2); }
+.icon-btn[aria-pressed="true"] .i-pause { display: none; }
+.icon-btn[aria-pressed="true"] .i-play { display: block; }
+.icon-btn.spin svg { animation: spin .6s linear infinite; }
 
 .access-tools { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
 .access-tools .search { max-width: 300px; }
@@ -701,6 +743,105 @@ h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .01em; }
 .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 0 0 12px; font-size: 12px; color: var(--muted); }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .legend i { width: 9px; height: 9px; border-radius: 3px; }
+.labels-reset {
+  margin-left: auto;
+  padding: 1px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+  transition: color .2s, border-color .2s, background .2s;
+}
+.labels-reset:hover { color: var(--text); border-color: var(--line-strong); }
+.labels-reset.confirm { color: var(--error); border-color: rgb(248 113 113 / 0.5); background: rgb(248 113 113 / 0.08); animation: pop .3s; }
+
+/* Стрелка у ресурса-адреса и строка под ним: «без DNS», «≈ имя». */
+.res-more {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin-left: 8px;
+  padding: 0;
+  border: 1px solid rgb(251 191 36 / 0.35);
+  border-radius: 50%;
+  background: rgb(251 191 36 / 0.07);
+  color: var(--warn);
+  cursor: pointer;
+  transition: background .2s, box-shadow .2s;
+}
+.res-more:not(.by-ip-more) { border-color: var(--line-strong); background: var(--field); color: var(--muted); }
+.res-more.maybe:not(.shown) { display: none; }
+.res-head { display: flex; align-items: center; min-width: 0; }
+/* Колонка текста — чуть шире самого длинного адреса с подсетью
+   (255.255.255.255/32 — 18 знаков моноширинного шрифта имени): стрелки в
+   одну линию, длинное раскрывается стрелкой. */
+.res.has-more {
+  display: grid;
+  grid-template-columns: minmax(0, calc(20ch + 2px)) auto;
+  justify-content: start;
+  align-items: center;
+  font: var(--mono);
+  font-size: 13.5px;
+}
+.res.has-more > * { grid-column: 1; }
+.res.has-more > .res-more { grid-column: 2; grid-row: 1 / span 3; align-self: center; margin-left: 10px; }
+.res-head .name { min-width: 0; }
+.res-head .res-more { flex: none; }
+.res.open .meta, .res.open .name { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+.cand .res-head { flex: 1 1 220px; }
+.cand .res-head .name { flex: 0 1 auto; }
+.res-more.has-label { border-color: rgb(96 165 250 / 0.4); background: var(--accent-soft); color: var(--accent); }
+.res-more:hover { box-shadow: 0 0 12px rgb(251 191 36 / 0.3); }
+.res-more.has-label:hover { box-shadow: 0 0 12px var(--accent-glow); }
+.res-more svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; transition: transform .25s; }
+.res-more[aria-expanded="true"] svg { transform: rotate(180deg); }
+.res-more:focus-visible { outline: 2px solid var(--warn); outline-offset: 2px; }
+.res-extra { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 5px 0 3px; animation: row-in .25s ease-out both; }
+.res-extra[hidden] { display: none; }
+.res-extra .by-ip, .res-extra .ip-label { margin-left: 0; }
+.cand .res-extra { flex-basis: 100%; margin: 0; }
+
+/* «≈ имя» — запомненное имя адреса (labelChip в app.js). */
+.ip-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  margin-left: 6px;
+  padding: 0 8px;
+  border: 1px solid rgb(96 165 250 / 0.3);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: #bfdbfe;
+  font: 500 11.5px/1.7 system-ui, sans-serif;
+  vertical-align: 1px;
+  cursor: pointer;
+  transition: background .2s, border-color .2s, box-shadow .2s;
+  animation: pop-in .3s cubic-bezier(.2, .9, .3, 1.3) both;
+}
+.ip-label:hover, .ip-label[aria-expanded="true"] { border-color: rgb(96 165 250 / 0.6); box-shadow: 0 0 14px var(--accent-glow); }
+.ip-label.mine { border-style: dashed; }
+.ip-label .approx { color: var(--accent); }
+.ip-label .label-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ip-label:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ip-pop-form { display: flex; gap: 8px; margin: 4px 0 8px; }
+.ip-pop-form input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--field);
+  color: var(--text);
+  font: inherit;
+}
+.ip-pop-form input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.ip-pop-forget { padding: 0; border: 0; background: none; color: var(--error); font: inherit; font-size: 12.5px; cursor: pointer; }
+.ip-pop-forget:hover { text-decoration: underline; }
+.ip-pop-forget + .ip-pop-note { margin-top: 8px; }
 .ok-c, .legend .ok, .bar .ok { background: var(--ok); }
 .legend .to, .bar .to { background: var(--error); }
 .legend .rf, .bar .rf { background: #fb923c; }
@@ -729,6 +870,75 @@ h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .01em; }
 
 .res { min-width: 0; }
 .res .name { display: block; font: var(--mono); font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* «без DNS» — ресурс-адрес: кнопка с облачком-пояснением (noDNS в app.js). */
+.by-ip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 8px;
+  padding: 0 5px 0 7px;
+  border: 1px solid rgb(251 191 36 / 0.35);
+  border-radius: 999px;
+  background: rgb(251 191 36 / 0.07);
+  color: var(--warn);
+  font: 600 10.5px/1.7 system-ui, sans-serif;
+  letter-spacing: .02em;
+  vertical-align: 1px;
+  cursor: pointer;
+  transition: background .2s, border-color .2s, box-shadow .2s;
+}
+.by-ip:hover, .by-ip[aria-expanded="true"] {
+  background: rgb(251 191 36 / 0.16);
+  border-color: rgb(251 191 36 / 0.6);
+  box-shadow: 0 0 14px rgb(251 191 36 / 0.25);
+}
+.by-ip:focus-visible { outline: 2px solid var(--warn); outline-offset: 2px; }
+.by-ip svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; transition: transform .25s; }
+.by-ip[aria-expanded="true"] svg { transform: rotate(180deg); }
+.owner .by-ip { margin-left: 4px; }
+
+.ip-pop {
+  position: absolute;
+  z-index: 60;
+  width: min(280px, calc(100vw - 24px));
+  padding: 11px 14px;
+  border: 1px solid rgb(251 191 36 / 0.3);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgb(28 26 20 / 0.92), rgb(14 14 14 / 0.94));
+  box-shadow: 0 20px 50px rgb(0 0 0 / 0.6), 0 0 0 1px rgb(255 255 255 / 0.03) inset;
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  font-size: 13px;
+  line-height: 1.5;
+  transform-origin: var(--arrow, 50%) 0;
+  animation: pop-cloud .22s cubic-bezier(.2, .9, .3, 1.2) both;
+}
+.ip-pop.above { transform-origin: var(--arrow, 50%) 100%; }
+.ip-pop::before {
+  content: "";
+  position: absolute;
+  top: -6px;
+  left: calc(var(--arrow, 50%) - 6px);
+  width: 10px;
+  height: 10px;
+  border-left: 1px solid rgb(251 191 36 / 0.3);
+  border-top: 1px solid rgb(251 191 36 / 0.3);
+  background: rgb(28 26 20);
+  transform: rotate(45deg);
+}
+.ip-pop.above::before { top: auto; bottom: -6px; transform: rotate(225deg); background: rgb(14 14 14); }
+.ip-pop-title { display: block; margin-bottom: 6px; color: var(--warn); font-size: 13.5px; }
+.ip-pop p { margin: 0 0 8px; }
+.ip-pop-names { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-bottom: 8px; }
+.ip-pop-names a { color: var(--text); text-decoration: underline dotted; text-underline-offset: 3px; overflow-wrap: anywhere; }
+.ip-pop-names a:hover { color: var(--accent); }
+.ip-pop-note { padding-top: 8px; border-top: 1px solid var(--line); color: var(--muted); }
+.ip-pop-check { color: var(--accent); text-decoration: none; font-weight: 600; }
+.ip-pop-check:hover { text-decoration: underline; }
+.ip-pop.accent, .ip-pop.accent::before { border-color: rgb(96 165 250 / 0.35); }
+.ip-pop.accent .ip-pop-title { color: var(--accent); }
+@keyframes pop-cloud { from { opacity: 0; transform: translateY(-4px) scale(.92); } }
+
 .res .meta { display: block; font: var(--mono); font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dev { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dev .ip { display: block; font: var(--mono); font-size: 11.5px; color: var(--muted); }
@@ -982,6 +1192,22 @@ h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .01em; }
 
 .check-result { padding: 20px; animation: rise .55s cubic-bezier(.2, .8, .2, 1) both; }
 .check-result h2 { overflow-wrap: anywhere; }
+
+.owner {
+  margin: -4px 0 18px;
+  padding: 12px 14px;
+  font-size: 13.5px;
+  gap: 6px 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgb(255 255 255 / 0.02);
+  animation: rise .45s cubic-bezier(.2, .8, .2, 1) both;
+}
+.owner dd { font: var(--mono); font-size: 13px; }
+.owner dd a { color: inherit; text-decoration: underline dotted; text-underline-offset: 3px; }
+.owner dd a:hover { color: var(--accent); }
+.owner .sep { color: var(--muted); }
+.owner .by-ip { margin-left: 0; }
 
 .paths { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 @media (max-width: 720px) { .paths { grid-template-columns: 1fr; } }

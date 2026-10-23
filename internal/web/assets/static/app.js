@@ -323,6 +323,152 @@
     return e;
   }
 
+  // Облачко (popover) у кнопки: noDNS — пояснение «без DNS», labelChip —
+  // имя адреса с правкой. Одно на страницу; закрывается щелчком мимо, Esc,
+  // сменой раздела или когда кнопка исчезла (список перерисован).
+  var CHEVRON = '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 4 L5 6.5 L7.5 4"/></svg>';
+  var pop = null;
+
+  function popButton(cls, build) {
+    var b = el('button', cls);
+    b.type = 'button';
+    b.setAttribute('aria-haspopup', 'dialog');
+    b.setAttribute('aria-expanded', 'false');
+    b.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (pop && pop.anchor === b) { closePop(); return; }
+      openPop(b, build());
+    });
+    return b;
+  }
+
+  // noDNS — кнопка «без DNS» у ресурса-адреса: устройство обратилось по IP,
+  // не спрашивая имя у DNS routerd (sni — имена из TLS, строка или список).
+  function noDNS(ip, sni, check) {
+    var b = popButton('by-ip', function () {
+      var names = [].concat(sni || []);
+      var box = popBox('Обращение без DNS');
+      box.appendChild(el('p', '', 'Устройство пришло по IP, не спросив имя у routerd.'));
+      if (names.length) {
+        var row = el('div', 'ip-pop-names');
+        row.appendChild(el('span', 'muted', 'Имя из TLS: '));
+        names.forEach(function (n) {
+          var a = el('a', 'mono', n);
+          a.href = '#check?target=' + encodeURIComponent(n);
+          a.title = 'Проверить ' + n;
+          row.appendChild(a);
+        });
+        box.appendChild(row);
+      } else {
+        box.appendChild(el('p', 'muted', 'Имени в TLS нет.'));
+      }
+      box.appendChild(el('p', 'ip-pop-note', 'В VPN — только IP или подсеть, домен не сработает.'));
+      if (check !== false) {
+        var c = el('a', 'ip-pop-check', 'Чей адрес →');
+        c.href = '#check?target=' + encodeURIComponent(ip);
+        box.appendChild(c);
+      }
+      return box;
+    });
+    b.appendChild(document.createTextNode('без DNS'));
+    b.insertAdjacentHTML('beforeend', CHEVRON);
+    return b;
+  }
+
+  var LABEL_SOURCE = {
+    cert: 'по сертификату сервера', ptr: 'по обратной записи DNS (PTR)',
+    as: 'по оператору сети', user: 'задано вручную'
+  };
+
+  // labelChip — плашка «≈ имя» у адреса: имя запомнила проверка или задали
+  // вручную. По нажатию — правка; пустое имя — забыть адрес. onChange — после
+  // сохранения (перечитать список).
+  function labelChip(ip, label, onChange) {
+    var b = popButton('ip-label' + (label.source === 'user' ? ' mine' : ''), function () {
+      var box = popBox('Имя адреса ' + ip);
+      box.classList.add('accent');
+      var when = label.at ? new Date(label.at * 1000).toLocaleString('ru-RU',
+        { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+      box.appendChild(el('p', 'muted', 'Записано в память ' + (LABEL_SOURCE[label.source] || '') + (when ? ', ' + when : '') + '.'));
+      var form = el('form', 'ip-pop-form');
+      var input = el('input');
+      input.value = label.name;
+      input.maxLength = 60;
+      input.spellcheck = false;
+      input.setAttribute('aria-label', 'Имя адреса');
+      form.appendChild(input);
+      var save = el('button', 'btn tiny', 'Сохранить');
+      save.type = 'submit';
+      form.appendChild(save);
+      box.appendChild(form);
+      var forget = el('button', 'ip-pop-forget', 'Забыть адрес');
+      forget.type = 'button';
+      box.appendChild(forget);
+      box.appendChild(el('p', 'ip-pop-note', 'Проверка обновит имя, если оно не задано вручную.'));
+      function put(name) {
+        save.disabled = forget.disabled = true;
+        api('PUT', '/api/v1/iplabels', { ip: ip, name: name }).then(function () {
+          closePop();
+          toast(name ? ip + ' — «' + name + '»' : ip + ': имя забыто', 'ok');
+          if (onChange) onChange(name);
+        }, function (err) {
+          save.disabled = forget.disabled = false;
+          toast(err.message, 'bad');
+        });
+      }
+      form.addEventListener('submit', function (e) { e.preventDefault(); put(input.value.trim()); });
+      forget.addEventListener('click', function () { put(''); });
+      setTimeout(function () { input.focus(); input.select(); }, 30);
+      return box;
+    });
+    b.appendChild(el('span', 'approx', '≈'));
+    b.appendChild(el('span', 'label-name', label.name));
+    return b;
+  }
+
+  function popBox(title) {
+    var box = el('div', 'ip-pop');
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-label', title);
+    box.appendChild(el('b', 'ip-pop-title', title));
+    return box;
+  }
+
+  function openPop(anchor, box) {
+    closePop();
+    box.addEventListener('click', function (e) {
+      if (e.target.closest('a')) closePop(); else e.stopPropagation();
+    });
+    document.body.appendChild(box);
+    pop = { box: box, anchor: anchor, timer: setInterval(function () { if (!anchor.isConnected) closePop(); }, 500) };
+    anchor.setAttribute('aria-expanded', 'true');
+    placePop();
+  }
+
+  function placePop() {
+    if (!pop) return;
+    var r = pop.anchor.getBoundingClientRect(), w = pop.box.offsetWidth, h = pop.box.offsetHeight;
+    var left = Math.min(Math.max(12, r.left + r.width / 2 - w / 2), window.innerWidth - w - 12);
+    var below = r.bottom + 10 + h < window.innerHeight || r.top - 10 - h < 0;
+    pop.box.classList.toggle('above', !below);
+    pop.box.style.left = left + 'px';
+    pop.box.style.top = (below ? r.bottom + 10 : r.top - 10 - h) + window.scrollY + 'px';
+    pop.box.style.setProperty('--arrow', Math.min(Math.max(16, r.left + r.width / 2 - left), w - 16) + 'px');
+  }
+
+  function closePop() {
+    if (!pop) return;
+    clearInterval(pop.timer);
+    pop.anchor.setAttribute('aria-expanded', 'false');
+    pop.box.remove();
+    pop = null;
+  }
+
+  document.addEventListener('click', closePop);
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closePop(); });
+  window.addEventListener('resize', placePop);
+  window.addEventListener('hashchange', closePop);
+
   // segmented — переключатель (role=radio); onChange(значение атрибута attr).
   function segmented(root, attr, onChange) {
     root.addEventListener('click', function (e) {
@@ -499,19 +645,87 @@
       return box;
     }
 
+    // resName — имя ресурса и строка подробностей (meta) в box. Стрелка
+    // раскрывает строку целиком (без «…»), а у ресурса-адреса (устройство
+    // обратилось по IP, не спрашивая DNS routerd) ещё и строку с «без DNS» и
+    // записанным в память именем. Вид по умолчанию — переключатель
+    // «Компактно | Развёрнуто»; стрелка меняет одну строку, состояние
+    // помнится по id (у одного адреса строк может быть несколько).
+    var expanded = {};
+    var viewFull = false;
+    try { viewFull = localStorage.getItem('routerd.accView') === 'full'; } catch (e) { /* без хранилища */ }
+
+    function isOpen(id) { return id in expanded ? expanded[id] : viewFull; }
+
+    function resName(box, id, resource, sni, label, metaText) {
+      var head = el('div', 'res-head');
+      var n = el('span', 'name', resource);
+      head.appendChild(n);
+      box.appendChild(head);
+      var byIP = /^[0-9.]+$/.test(resource);
+      var extra = null;
+      if (byIP) {
+        extra = el('div', 'res-extra');
+        extra.appendChild(noDNS(resource, sni));
+        if (label) extra.appendChild(labelChip(resource, label, function () { load(true); }));
+        box.appendChild(extra);
+      }
+      if (metaText) box.appendChild(el('span', 'meta', metaText));
+      if (!byIP && !metaText) return;
+      var t = el('button', 'res-more' + (byIP ? ' by-ip-more' : '') + (label ? ' has-label' : ''));
+      t.type = 'button';
+      t.innerHTML = CHEVRON;
+      // Не адрес — стрелка нужна, только если строка не помещается (fitArrows).
+      if (!byIP) t.classList.add('maybe');
+      function set(on) {
+        box.classList.toggle('open', on);
+        if (extra) extra.hidden = !on;
+        t.setAttribute('aria-expanded', on ? 'true' : 'false');
+        t.title = on ? 'Свернуть' : 'Подробнее';
+      }
+      t.setAttribute('aria-label', 'Подробнее: ' + resource);
+      t.addEventListener('click', function (e) {
+        e.stopPropagation();
+        expanded[id] = !isOpen(id);
+        set(expanded[id]);
+      });
+      set(isOpen(id));
+      // В строке «Обращений» стрелка — отдельной колонкой по центру имени и
+      // подробностей; у кандидата — рядом с адресом.
+      if (metaText) {
+        box.classList.add('has-more');
+        box.appendChild(t);
+      } else {
+        head.appendChild(t);
+      }
+    }
+
+    // fitArrows — стрелки у строк, где подробности не помещаются (или уже
+    // раскрыты); вызывается после отрисовки и при смене ширины окна.
+    function fitArrows() {
+      rowsBox.querySelectorAll('.res-more.maybe').forEach(function (t) {
+        var box = t.closest('.res');
+        var over = function (e) { return e && e.scrollWidth > e.clientWidth + 1; };
+        var need = box.classList.contains('open') || over(box.querySelector('.name')) || over(box.querySelector('.meta'));
+        t.classList.toggle('shown', !!need);
+      });
+    }
+    var fitT = null;
+    window.addEventListener('resize', function () { clearTimeout(fitT); fitT = setTimeout(fitArrows, 150); });
+
     function rowEl(r, n, devs, changed) {
       var problem = r.timeout + r.refused + r.nodata > 0;
       var row = el('div', 'acc-row' + (problem ? ' problem' : '') + (changed ? ' changed' : ''));
       row.setAttribute('role', 'row');
       row.style.setProperty('--n', n);
       var res = el('div', 'res');
-      res.appendChild(el('span', 'name', r.resource));
       var meta = [];
+      if (r.label) meta.push('≈ ' + r.label.name);
+      if (r.sni) meta.push('TLS: ' + r.sni);
       if (r.ip && r.ip !== r.resource) meta.push(r.ip);
       if (r.ports && r.ports.length) meta.push(r.proto + ' ' + r.ports.join(', '));
       if (r.bytes) meta.push(size(r.bytes));
-      res.appendChild(el('span', 'meta', meta.join(' · ')));
-      res.title = r.resource;
+      resName(res, key(r), r.resource, r.sni, r.label, meta.join(' · '));
       row.appendChild(res);
       var d = devs[r.device] || { name: r.device, ip: '' };
       var dev = el('div', 'dev', d.name);
@@ -606,12 +820,51 @@
       rowsBox.classList.toggle('quiet', !animate);
       rowsBox.textContent = '';
       rowsBox.appendChild(frag);
+      fitArrows();
       prev = next;
       rowsBox.setAttribute('data-empty', 'За этот период обращений нет' + (q.q || q.device || q.route || q.status ? ' (с этими фильтрами)' : ''));
       more.hidden = data.rows.length <= shown;
       foot.textContent = data.truncated ? 'Показаны последние ' + data.rows.length + ' строк — уточните фильтры' :
         (data.rows.length > shown ? 'Показано ' + shown + ' из ' + data.rows.length : '');
+      labelsReset.render(data.labels || 0);
     }
+
+    // labelsReset — «забыть имена адресов»: первый щелчок — подтверждение,
+    // второй в течение 4 с — сброс всех запомненных имён.
+    var labelsReset = (function () {
+      var b = document.getElementById('acc-labels-reset');
+      var count = 0, t = null;
+      function idle() {
+        clearTimeout(t);
+        t = null;
+        b.classList.remove('confirm');
+        b.textContent = 'Забыть имена адресов · ' + count;
+        b.title = 'Имена IP-адресов, записанные в память проверкой или заданные вручную';
+      }
+      b.addEventListener('click', function () {
+        if (!t) {
+          b.classList.add('confirm');
+          b.textContent = 'Забыть все ' + count + '? Нажмите ещё раз';
+          t = setTimeout(idle, 4000);
+          return;
+        }
+        clearTimeout(t);
+        b.disabled = true;
+        api('DELETE', '/api/v1/iplabels').then(function (r) {
+          toast('Имена адресов забыты: ' + r.removed, 'ok');
+          load(true);
+        }, function (err) {
+          toast(err.message, 'bad');
+        }).then(function () { b.disabled = false; t = null; idle(); });
+      });
+      return {
+        render: function (n) {
+          count = n;
+          b.hidden = !n;
+          if (!t) idle();
+        }
+      };
+    })();
 
     var CAND_TOP = 3, candAll = false, candOpen = {};
     var candMore = document.getElementById('cand-more');
@@ -632,9 +885,11 @@
       list.forEach(function (c, i) {
         var li = el('li', 'cand');
         li.style.setProperty('--n', i);
-        li.appendChild(el('span', 'name', c.resource));
+        resName(li, 'cand|' + c.resource, c.resource, c.sni, c.label, '');
         var f = el('span', 'facts');
         f.appendChild(el('span', 'chip chip-bad', 'таймаутов ' + c.timeout));
+        if (c.label) f.appendChild(el('span', 'chip mono', '≈ ' + c.label.name));
+        if (c.sni) f.appendChild(el('span', 'chip mono', 'TLS: ' + c.sni));
         if (c.ok) f.appendChild(el('span', 'chip chip-ok', 'успешных ' + c.ok));
         var db = el('button', 'chip chip-btn', c.devices + ' ' + plural(c.devices, 'устройство', 'устройства', 'устройств'));
         db.type = 'button';
@@ -708,11 +963,66 @@
     function refilter() { shown = ACCESS_PAGE; prev = null; load(true); }
 
     function poll() {
-      if (open > 0 || document.hidden) { live.classList.add('paused'); return; }
+      // Пауза: выключено вручную, открыт выбор «В VPN» или облачко.
+      if (stopped || open > 0 || pop || document.hidden) { live.classList.add('paused'); return; }
       live.classList.remove('paused');
       load(false);
     }
 
+    // Шапка ушла за верх экрана — пауза и обновление плавают в углу, чтобы
+    // остановить список, не возвращаясь наверх.
+    // Элемент переносится в body: у карточки backdrop-filter, и position:
+    // fixed внутри неё считался бы от карточки, а не от окна.
+    var liveCtl = document.querySelector('#access-main .live-ctl');
+    var liveHome = liveCtl.parentNode;
+    function floatLive(away) {
+      if (away === liveCtl.classList.contains('float')) return;
+      liveCtl.classList.toggle('float', away);
+      document.body.classList.toggle('live-float', away);
+      (away ? document.body : liveHome).appendChild(liveCtl);
+    }
+    if ('IntersectionObserver' in window) {
+      new IntersectionObserver(function (es) {
+        floatLive(!es[0].isIntersecting && es[0].boundingClientRect.top < 0);
+      }).observe(liveHome);
+    }
+
+    // Остановка автообновления (списки не прыгают, пока смотришь) и разовое
+    // обновление.
+    var stopped = false;
+    var pauseBtn = document.getElementById('acc-pause');
+    var refreshBtn = document.getElementById('acc-refresh');
+    pauseBtn.addEventListener('click', function () {
+      stopped = !stopped;
+      var t = stopped ? 'Продолжить автообновление' : 'Остановить автообновление';
+      pauseBtn.setAttribute('aria-pressed', stopped ? 'true' : 'false');
+      pauseBtn.title = t;
+      pauseBtn.setAttribute('aria-label', t);
+      live.classList.toggle('paused', stopped);
+      live.classList.toggle('stopped', stopped);
+      live.lastElementChild.textContent = stopped ? 'на паузе' : 'в реальном времени';
+      if (!stopped) load(false);
+    });
+    refreshBtn.addEventListener('click', function () {
+      if (refreshBtn.classList.contains('spin')) return;
+      refreshBtn.classList.add('spin');
+      var started = Date.now();
+      load(false).then(function () {
+        // Хотя бы один оборот — иначе быстрый ответ незаметен.
+        setTimeout(function () { refreshBtn.classList.remove('spin'); }, Math.max(0, 600 - (Date.now() - started)));
+      });
+    });
+
+    var viewSeg = document.getElementById('acc-view');
+    viewSeg.querySelectorAll('button').forEach(function (b) {
+      b.setAttribute('aria-checked', (b.getAttribute('data-view') === 'full') === viewFull ? 'true' : 'false');
+    });
+    segmented(viewSeg, 'data-view', function (v) {
+      viewFull = v === 'full';
+      expanded = {};
+      try { localStorage.setItem('routerd.accView', v); } catch (e) { /* без хранилища */ }
+      if (data) { renderCands(true); renderRows(false); }
+    });
     segmented(document.getElementById('acc-period'), 'data-hours', function (h) { q.hours = Number(h); refilter(); });
     segmented(document.getElementById('acc-route'), 'data-route', function (v) { q.route = v; refilter(); });
     segmented(document.getElementById('acc-status'), 'data-status', function (v) { q.status = v; refilter(); });
@@ -744,7 +1054,7 @@
         load(true);
         timer = setInterval(poll, ACCESS_POLL_MS);
       },
-      leave: function () { clearInterval(timer); }
+      leave: function () { clearInterval(timer); floatLive(false); }
     };
   })();
 
@@ -838,6 +1148,71 @@
       }
     }
 
+    // Кому может принадлежать адрес: сеть оператора, PTR, сертификат сервера,
+    // имена из DNS-ответов и из TLS (обращения по IP).
+    function owner(r) {
+      var box = document.getElementById('check-owner');
+      var o = r.owner || {};
+      var cert = (r.direct && r.direct.cert) || (r.tunnel && r.tunnel.cert);
+      box.textContent = '';
+      box.hidden = !r.owner && !cert && !r.label;
+      if (box.hidden) return;
+      function row(label, parts) {
+        var dd = el('dd');
+        parts.forEach(function (x, i) {
+          if (i) dd.appendChild(el('span', 'sep', ' · '));
+          dd.appendChild(typeof x === 'string' ? document.createTextNode(x) : x);
+        });
+        box.appendChild(el('dt', '', label));
+        box.appendChild(dd);
+      }
+      function link(name) {
+        var a = el('a', '', name);
+        a.href = '#check?target=' + encodeURIComponent(name);
+        a.title = 'Проверить ' + name;
+        return a;
+      }
+      if (r.label) {
+        var put = function (lbl) {
+          var chip = labelChip(r.addr, lbl, function (name) {
+            if (!name) { labelDD.previousSibling.remove(); labelDD.remove(); return; }
+            labelDD.replaceChild(put({ name: name, source: 'user', at: Date.now() / 1000 }), chip);
+          });
+          return chip;
+        };
+        box.appendChild(el('dt', '', 'Записано в память'));
+        var labelDD = el('dd');
+        labelDD.appendChild(put(r.label));
+        box.appendChild(labelDD);
+      }
+      if (o.asn) {
+        row('Сеть', ['AS' + o.asn + (o.as_name ? ' ' + o.as_name : '')].concat(o.prefix ? [o.prefix] : [], o.country ? [o.country] : []));
+      }
+      if (o.ptr) row('Обратное имя', [o.ptr]);
+      if (cert) {
+        var names = (cert.names && cert.names.length ? cert.names : (cert.subject ? [cert.subject] : []));
+        var parts = names.map(function (n) { return n.indexOf('*') >= 0 ? n : link(n); });
+        if (cert.org) parts.unshift(cert.org);
+        if (cert.issuer) {
+          var iss = el('span', 'muted', 'выдан ' + cert.issuer);
+          parts.push(iss);
+        }
+        row(r.name ? 'Сертификат' : 'Сертификат (без SNI)', parts);
+      }
+      if (o.names && o.names.length) row(r.name ? 'Тот же адрес у' : 'Имена в DNS', o.names.map(link));
+      if (o.sni && o.sni.length) {
+        box.appendChild(el('dt', '', 'Обращения без DNS'));
+        var dd = el('dd');
+        o.sni.forEach(function (n, i) {
+          if (i) dd.appendChild(el('span', 'sep', ' · '));
+          dd.appendChild(link(n));
+        });
+        dd.appendChild(document.createTextNode(' '));
+        dd.appendChild(noDNS(r.addr, o.sni, false));
+        box.appendChild(dd);
+      }
+    }
+
     function remember(target, p, r) {
       recent = recent.filter(function (x) { return !(x.target === target && x.port === p); });
       recent.unshift({ target: target, port: p, cls: r.direct.ok && r.tunnel.ok ? 'ok' : (r.direct.ok || r.tunnel.ok ? 'warn' : 'bad') });
@@ -862,6 +1237,7 @@
       document.getElementById('check-title').textContent = target;
       document.getElementById('check-addrs').textContent = 'Проверка…';
       document.getElementById('check-list').hidden = true;
+      document.getElementById('check-owner').hidden = true;
       document.getElementById('check-verdict').textContent = '';
       pathPanel('path-direct', null, true);
       pathPanel('path-tunnel', null, true);
@@ -873,6 +1249,7 @@
         pill.lastElementChild.textContent = r.in_list ? 'в списке VPN' + (r.list_entry && r.list_entry !== r.target ? ' · ' + r.list_entry : '') : 'не в списке VPN';
         document.getElementById('check-addrs').textContent = (r.name ? 'Адрес ' + r.addrs.join(', ') + '. ' : '') +
           'Устройства LAN сейчас идут к нему ' + (r.route === 'tunnel' ? 'через туннель.' : 'напрямую.');
+        owner(r);
         pathPanel('path-direct', r.direct);
         pathPanel('path-tunnel', r.tunnel);
         verdict(r);

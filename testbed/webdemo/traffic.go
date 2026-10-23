@@ -30,6 +30,9 @@ type demoSite struct {
 	// nodata — через туннель без данных.
 	fail   string
 	weight int
+	// sni — имя в TLS при обращении по IP (name пусто: устройство не
+	// спрашивало DNS routerd).
+	sni string
 }
 
 var (
@@ -58,6 +61,10 @@ var (
 		{name: "mail.example.net", ip: netip.MustParseAddr("198.51.100.33"), port: 993, weight: 3},
 		{name: "", ip: netip.MustParseAddr("198.51.100.90"), port: 8080, fail: "refused", weight: 1},
 		{name: "time.example.net", ip: netip.MustParseAddr("198.51.100.35"), port: 123, udp: true, weight: 2},
+		// Обращения по IP без DNS: приложение со своим резолвером или зашитыми адресами.
+		{ip: netip.MustParseAddr("198.51.100.91"), port: 443, sni: "push.example.net", weight: 4},
+		{ip: netip.MustParseAddr("203.0.113.77"), port: 443, sni: "api.messenger.example", weight: 3},
+		{ip: netip.MustParseAddr("192.0.2.71"), port: 5222, fail: "timeout", weight: 2},
 	}
 )
 
@@ -140,6 +147,9 @@ func (tr *traffic) step(total int) {
 		d := demoDevices[rand.IntN(len(demoDevices))]
 		if s.name != "" {
 			tr.t.Answer(d.ip, s.name, []netip.Addr{s.ip}, 5*time.Minute)
+		}
+		if s.sni != "" {
+			tr.t.SNI(d.ip, s.ip, s.sni)
 		}
 		tr.port++
 		f := access.Flow{Proto: access.ProtoTCP, Src: d.ip, Dst: s.ip, SPort: 40000 + tr.port%20000, DPort: s.port,

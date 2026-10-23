@@ -377,3 +377,47 @@ func TestParseFlow(t *testing.T) {
 		t.Error("короткое сообщение принято")
 	}
 }
+
+func TestNamesOf(t *testing.T) {
+	c := newClock()
+	tr := newTestTracker(c, "")
+	tr.Answer(phone, "cdn.example", []netip.Addr{webIP}, time.Minute)
+	tr.Answer(laptop, "site.example", []netip.Addr{webIP}, time.Minute)
+	if got := tr.NamesOf(webIP); len(got) != 2 || got[0] != "cdn.example" || got[1] != "site.example" {
+		t.Fatalf("NamesOf = %v", got)
+	}
+	if got := tr.NamesOf(otherIP); len(got) != 0 {
+		t.Fatalf("NamesOf чужого адреса = %v", got)
+	}
+}
+
+func TestSNIHint(t *testing.T) {
+	dir := t.TempDir()
+	c := newClock()
+	tr := newTestTracker(c, dir)
+	tr.Observe(nil, true)
+	// По IP без DNS-ответа: ресурс — адрес, имя из TLS — подсказка.
+	tr.SNI(phone, otherIP, "push.example.com")
+	// С именем из DNS подсказка не нужна.
+	tr.Answer(phone, "site.example", []netip.Addr{webIP}, time.Minute)
+	tr.SNI(phone, webIP, "other.example")
+	tr.Observe([]Flow{tcp(phone, 1001, otherIP, tcpEstablished, 4, 5000), tcp(phone, 1002, webIP, tcpEstablished, 4, 5000)}, true)
+	if r := rowOf(t, tr, "mac:aa", otherIP.String()); r.SNI != "push.example.com" {
+		t.Fatalf("подсказка SNI: %+v", r)
+	}
+	if r := rowOf(t, tr, "mac:aa", "site.example"); r.SNI != "" {
+		t.Fatalf("подсказка у ресурса с именем: %+v", r)
+	}
+	if got := tr.SNIOf(otherIP); len(got) != 1 || got[0] != "push.example.com" {
+		t.Fatalf("SNIOf = %v", got)
+	}
+	if res := tr.Query(Query{Since: time.Hour, Search: "push"}); len(res.Rows) != 1 {
+		t.Fatalf("поиск по имени из TLS: %+v", res.Rows)
+	}
+	// Подсказка переживает сохранение истории.
+	tr.Close()
+	tr2 := newTestTracker(c, dir)
+	if r := rowOf(t, tr2, "mac:aa", otherIP.String()); r.SNI != "push.example.com" {
+		t.Fatalf("после перезапуска: %+v", r)
+	}
+}

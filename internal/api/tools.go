@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/volkserg/rpi5-gorouter/internal/ipinfo"
+	"github.com/volkserg/rpi5-gorouter/internal/iplabels"
 	"github.com/volkserg/rpi5-gorouter/internal/probe"
 )
 
@@ -40,6 +43,10 @@ type CheckResult struct {
 	Route     string     `json:"route"` // маршрут устройств LAN к ресурсу сейчас
 	Direct    probe.Path `json:"direct"`
 	Tunnel    probe.Path `json:"tunnel"`
+	// Owner — кому может принадлежать адрес Addr.
+	Owner *ipinfo.Info `json:"owner,omitempty"`
+	// Label — запомненное имя адреса (проверка IP запоминает его сама).
+	Label *iplabels.Label `json:"label,omitempty"`
 }
 
 // TunnelCheck — внешний IP напрямую и через туннель.
@@ -96,6 +103,10 @@ type Tools interface {
 	Devices() []DeviceRow
 	// SetDeviceName задаёт устройству имя (пусто — сбросить).
 	SetDeviceName(key, name string) error
+	// SetIPLabel задаёт имя адреса вручную (пусто — забыть адрес).
+	SetIPLabel(ip netip.Addr, name string) error
+	// ResetIPLabels забывает имена всех адресов; n — сколько было.
+	ResetIPLabels() (int, error)
 	// Journal — записи журнала юнита (routerd, web, tunnel, pihole,
 	// dnscrypt) после cursor (пусто — последние lines).
 	Journal(ctx context.Context, unit, cursor string, lines int) (Journal, error)
@@ -150,6 +161,34 @@ func toolRoutes(mux *http.ServeMux, b Backend) {
 			return
 		}
 		WriteJSON(w, http.StatusOK, map[string]string{"key": req.Key, "name": strings.TrimSpace(req.Name)})
+	})
+	mux.HandleFunc("PUT /v1/iplabels", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			IP   string `json:"ip"`
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+			WriteJSON(w, http.StatusBadRequest, Error{"некорректный запрос"})
+			return
+		}
+		ip, err := netip.ParseAddr(strings.TrimSpace(req.IP))
+		if err != nil {
+			WriteJSON(w, http.StatusBadRequest, Error{"некорректный адрес"})
+			return
+		}
+		if err := b.SetIPLabel(ip, req.Name); err != nil {
+			WriteJSON(w, http.StatusBadRequest, Error{err.Error()})
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]string{"ip": ip.String(), "name": strings.TrimSpace(req.Name)})
+	})
+	mux.HandleFunc("DELETE /v1/iplabels", func(w http.ResponseWriter, r *http.Request) {
+		n, err := b.ResetIPLabels()
+		if err != nil {
+			WriteJSON(w, http.StatusInternalServerError, Error{err.Error()})
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]int{"removed": n})
 	})
 	mux.HandleFunc("GET /v1/journal", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()

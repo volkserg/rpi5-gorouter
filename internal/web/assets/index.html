@@ -169,7 +169,16 @@
       <div class="card reveal" id="access-main">
         <div class="card-head">
           <h2>Обращения устройств</h2>
-          <span class="live" id="access-live" title="Обновляется каждые 10 с"><i></i>в реальном времени</span>
+          <div class="live-ctl">
+            <span class="live" id="access-live" title="Обновляется каждые 10 с"><i></i><span>в реальном времени</span></span>
+            <button class="icon-btn" type="button" id="acc-pause" aria-pressed="false" title="Остановить автообновление" aria-label="Остановить автообновление">
+              <svg class="i-pause" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 3.5 V12.5 M10.5 3.5 V12.5"/></svg>
+              <svg class="i-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.5 L12.5 8 L5 12.5 Z"/></svg>
+            </button>
+            <button class="icon-btn" type="button" id="acc-refresh" title="Обновить сейчас" aria-label="Обновить сейчас">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8 A5 5 0 1 1 11.5 4.4 M13 2.5 V5 H10.5"/></svg>
+            </button>
+          </div>
         </div>
         <div class="access-tools">
           <div class="segmented" id="acc-period" role="radiogroup" aria-label="Период">
@@ -190,6 +199,10 @@
             <button type="button" role="radio" aria-checked="false" data-status="problems">Проблемы</button>
             <button type="button" role="radio" aria-checked="false" data-status="ok">Успешные</button>
           </div>
+          <div class="segmented" id="acc-view" role="radiogroup" aria-label="Вид строк">
+            <button type="button" role="radio" aria-checked="true" data-view="compact">Компактно</button>
+            <button type="button" role="radio" aria-checked="false" data-view="full">Развёрнуто</button>
+          </div>
           <label class="search">
             <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="6"/><path d="M14 14 L18 18"/></svg>
             <input type="search" id="acc-search" placeholder="Ресурс, адрес или устройство" spellcheck="false" autocapitalize="none">
@@ -202,6 +215,7 @@
           <span><i class="to"></i>таймаут — нет ответа</span>
           <span><i class="rf"></i>отказ или сброс без ответа</span>
           <span><i class="nd"></i>туннель без данных</span>
+          <button class="labels-reset" type="button" id="acc-labels-reset" hidden></button>
         </div>
 
         <div class="acc-table" id="acc-table" role="table" aria-label="Обращения">
@@ -251,6 +265,7 @@
           <span class="pill" id="check-list"><i></i><span></span></span>
         </div>
         <p class="hint" id="check-addrs"></p>
+        <dl class="props owner" id="check-owner" hidden></dl>
         <div class="paths">
           <div class="path" id="path-direct"><h3>Напрямую</h3><div class="path-body"></div></div>
           <div class="path tunnel" id="path-tunnel"><h3>Через туннель</h3><div class="path-body"></div></div>

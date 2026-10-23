@@ -45,8 +45,10 @@ type row struct {
 	Bytes                        uint64
 	Last                         int64
 	IP                           netip.Addr
-	Ports                        []uint16
-	Protos                       uint8 // 1 — TCP, 2 — UDP
+	// SNI — имя из TLS ClientHello, если ресурс известен только по адресу.
+	SNI    string
+	Ports  []uint16
+	Protos uint8 // 1 — TCP, 2 — UDP
 }
 
 type period struct {
@@ -89,6 +91,9 @@ func (r *row) merge(o *row) {
 		if o.IP.IsValid() {
 			r.IP = o.IP
 		}
+	}
+	if o.SNI != "" && (r.SNI == "" || o.Last >= r.Last) {
+		r.SNI = o.SNI
 	}
 	for _, p := range o.Ports {
 		r.addPort(p)
@@ -165,7 +170,7 @@ func (h *history) closeHour(p *period) {
 	h.save(p, fmt.Sprintf("hour-%d.json.gz", p.start.Unix()))
 }
 
-func (h *history) add(dev Device, res string, ip netip.Addr, port uint16, proto uint8, route Route, out Outcome, now time.Time) {
+func (h *history) add(dev Device, res, sni string, ip netip.Addr, port uint16, proto uint8, route Route, out Outcome, now time.Time) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	r := h.current(now).get(dev, res, route)
@@ -184,6 +189,9 @@ func (h *history) add(dev Device, res string, ip netip.Addr, port uint16, proto 
 	}
 	r.Last = now.Unix()
 	r.IP = ip
+	if sni != "" {
+		r.SNI = sni
+	}
 	r.addPort(port)
 	if proto == ProtoUDP {
 		r.Protos |= 2
@@ -192,11 +200,14 @@ func (h *history) add(dev Device, res string, ip netip.Addr, port uint16, proto 
 	}
 }
 
-func (h *history) addBytes(dev Device, res string, route Route, n uint64, now time.Time) {
+func (h *history) addBytes(dev Device, res, sni string, route Route, n uint64, now time.Time) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if r := h.current(now).get(dev, res, route); r != nil {
 		r.Bytes += n
+		if sni != "" {
+			r.SNI = sni
+		}
 	}
 }
 
@@ -279,6 +290,7 @@ type fileRow struct {
 	IP netip.Addr `json:"ip"`
 	P  []uint16   `json:"p,omitempty"`
 	X  uint8      `json:"x,omitempty"`
+	S  string     `json:"s,omitempty"`
 }
 
 type fileData struct {
@@ -296,7 +308,7 @@ func (h *history) save(p *period, name string) {
 	fd := fileData{Start: p.start.Unix(), Span: int64(p.span / time.Second), Devices: p.devices, Dropped: p.dropped}
 	for k, r := range p.rows {
 		fd.Rows = append(fd.Rows, fileRow{D: k.Device, R: k.Resource, T: k.Route, OK: r.OK, TO: r.Timeout,
-			RF: r.Refused, ND: r.NoData, B: r.Bytes, L: r.Last, IP: r.IP, P: r.Ports, X: r.Protos})
+			RF: r.Refused, ND: r.NoData, B: r.Bytes, L: r.Last, IP: r.IP, P: r.Ports, X: r.Protos, S: r.SNI})
 	}
 	var b strings.Builder
 	zw := gzip.NewWriter(&b)
@@ -342,7 +354,7 @@ func readPeriod(path string) (*period, error) {
 	p.dropped = fd.Dropped
 	for _, r := range fd.Rows {
 		p.rows[rowKey{r.D, r.R, r.T}] = &row{OK: r.OK, Timeout: r.TO, Refused: r.RF, NoData: r.ND,
-			Bytes: r.B, Last: r.L, IP: r.IP, Ports: r.P, Protos: r.X}
+			Bytes: r.B, Last: r.L, IP: r.IP, Ports: r.P, Protos: r.X, SNI: r.S}
 	}
 	return p, nil
 }
