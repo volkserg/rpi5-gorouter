@@ -469,6 +469,158 @@
   window.addEventListener('resize', placePop);
   window.addEventListener('hashchange', closePop);
 
+  // --- Плавающие кнопки -------------------------------------------------------
+  // Кнопки блока, шапка которого ушла под закреплённую верхнюю панель,
+  // прилипают к верху экрана там же по горизонтали, где стояли (правым краем —
+  // по краю шапки), и едут вместе с экраном: искать их не приходится.
+  // Элемент переносится в body: у карточек backdrop-filter, и position: fixed
+  // внутри них считался бы от карточки, а не от окна.
+
+  function topbarH() {
+    var t = document.querySelector('.topbar');
+    return t ? t.offsetHeight : 0;
+  }
+
+  // scrollToEl — плавно к элементу, не пряча его под верхней панелью.
+  function scrollToEl(e) {
+    window.scrollTo({ top: e.getBoundingClientRect().top + window.scrollY - topbarH() - 12, behavior: 'smooth' });
+  }
+
+  // floater — float(on) прилепляет элемент к верху экрана над его местом в
+  // шапке и возвращает обратно.
+  function floater(elm) {
+    var home = elm.parentNode;
+    // Заглушка того же размера держит место в шапке, пока элемент плавает:
+    // иначе шапка (на телефоне — в две строки) меняет высоту и список прыгает.
+    var ph = el('span', 'float-ph');
+    ph.setAttribute('aria-hidden', 'true');
+    function place() {
+      var r = home.getBoundingClientRect();
+      elm.style.top = topbarH() + FLOAT_GAP + 'px';
+      elm.style.right = Math.max(8, document.documentElement.clientWidth - r.right) + 'px';
+    }
+    window.addEventListener('resize', function () { if (elm.classList.contains('float')) place(); });
+    var still = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var ease = { duration: 380, easing: 'cubic-bezier(.2, .85, .25, 1)' };
+    var floating = false;
+
+    // anchor — по чему совмещать при возврате: первое содержимое (индикатор),
+    // а не край плашки — кнопки доезжают ровно на свои места.
+    function anchor() { return (elm.firstElementChild || elm).getBoundingClientRect(); }
+
+    // move — переставить элемент (к верху экрана или на место) и плавно
+    // довезти (FLIP). Вверх — по правому краю: плавающая версия шире и растёт
+    // влево. Обратно — по содержимому.
+    function move(on, animate) {
+      var a = on ? elm.getBoundingClientRect() : anchor();
+      if (on) {
+        ph.style.width = elm.offsetWidth + 'px';
+        ph.style.height = elm.offsetHeight + 'px';
+        ph.style.marginLeft = getComputedStyle(elm).marginLeft;
+        elm.parentNode.insertBefore(ph, elm);
+        place();
+        document.body.appendChild(elm);
+      } else {
+        elm.style.top = elm.style.right = '';
+        if (ph.parentNode) ph.parentNode.replaceChild(elm, ph);
+      }
+      elm.classList.toggle('float', on);
+      floating = on;
+      var b = on ? elm.getBoundingClientRect() : anchor();
+      if (!animate || still || !elm.animate || !a.width || !b.width) return;
+      var dx = on ? a.right - b.right : a.left - b.left;
+      elm.animate([
+        { transform: 'translate(' + dx + 'px, ' + (a.top - b.top) + 'px)' },
+        { transform: 'none' }
+      ], ease);
+      // Кнопки только плавающей версии вырастают из нулевой ширины.
+      if (on) {
+        elm.querySelectorAll('.only-float').forEach(function (x) {
+          var w = x.offsetWidth;
+          x.animate([
+            { width: '0px', marginLeft: '-6px', opacity: 0, transform: 'scale(.4)', borderWidth: '0px' },
+            { width: w + 'px', marginLeft: '0px', opacity: 1, transform: 'none', borderWidth: '1px' }
+          ], ease);
+        });
+      }
+    }
+
+    // ghost — обратный переход: стеклянная плашка и кнопки только плавающей
+    // версии — «тень» внутри самого элемента (позади содержимого, совмещена с
+    // ним): едет на место вместе с ним и по дороге гаснет.
+    function ghost() {
+      var fr = elm.getBoundingClientRect(), fa = anchor();
+      var g = elm.cloneNode(true);
+      g.removeAttribute('id');
+      g.querySelectorAll('[id]').forEach(function (x) { x.removeAttribute('id'); });
+      g.classList.add('float-ghost');
+      g.setAttribute('aria-hidden', 'true');
+      Array.prototype.forEach.call(g.children, function (c) {
+        if (!c.classList.contains('only-float')) c.style.visibility = 'hidden';
+      });
+      if (!g.children.length) g.textContent = '';
+      g.style.width = fr.width + 'px';
+      g.style.height = fr.height + 'px';
+      return function attach() {
+        var dr = elm.getBoundingClientRect(), da = anchor();
+        var left = (da.left - dr.left) - (fa.left - fr.left), top = (da.top - dr.top) - (fa.top - fr.top);
+        g.style.right = 'auto';
+        var pos = elm.style.position;
+        if (getComputedStyle(elm).position === 'static') elm.style.position = 'relative';
+        elm.classList.add('ghosting');
+        elm.appendChild(g);
+        // Рамка стягивается до размеров блока на месте: выступающая часть
+        // (со стрелкой «к фильтрам») сжимается и обрезается, к концу — гаснет.
+        var t = { duration: 380, easing: 'cubic-bezier(.2, .85, .25, 1)', fill: 'forwards' };
+        g.querySelectorAll('.only-float').forEach(function (x) {
+          x.animate([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'scale(.4)' }], t);
+        });
+        g.animate([
+          { left: left + 'px', top: top + 'px', width: fr.width + 'px', height: fr.height + 'px', opacity: 1 },
+          { opacity: 1, offset: 0.55 },
+          { left: '0px', top: '0px', width: dr.width + 'px', height: dr.height + 'px', opacity: 0 }
+        ], t).finished.then(function () {
+          g.remove();
+          elm.classList.remove('ghosting');
+          elm.style.position = pos;
+        });
+      };
+    }
+
+    // now — без анимации (раздел скрыт: ничего не должно мелькать поверх другого).
+    return function (on, now) {
+      if (on === floating) return;
+      var animate = !now && !still && !!elm.animate && elm.getBoundingClientRect().width > 0;
+      var attach = !on && animate ? ghost() : null;
+      move(on, animate);
+      if (attach) attach();
+    };
+  }
+
+  // FLOAT_GAP — отступ плавающей кнопки от верхней панели.
+  var FLOAT_GAP = 10;
+
+  // watchPos — где элемент относительно видимой области под верхней панелью:
+  // above (ушёл вверх), in, below или hidden (раздел скрыт). edge — шапка
+  // с плавающей кнопкой: above, как только её верх пересёк линию, где встанет
+  // плавающая версия (кнопка не уходит под панель, а сразу «прилипает»).
+  function watchPos(target, cb, edge) {
+    if (!('IntersectionObserver' in window)) return;
+    var obs = null, t = null;
+    function make() {
+      if (obs) obs.disconnect();
+      var line = topbarH() + (edge ? FLOAT_GAP : 0);
+      obs = new IntersectionObserver(function (es) {
+        var e = es[es.length - 1], r = e.boundingClientRect;
+        var inside = edge ? e.intersectionRatio > 0.99 : e.isIntersecting;
+        cb(!r.height ? 'hidden' : inside ? 'in' : r.top < line + 1 ? 'above' : 'below');
+      }, { rootMargin: '-' + line + 'px 0px 0px 0px', threshold: edge ? [0, 0.99, 1] : 0 });
+      obs.observe(target);
+    }
+    make();
+    window.addEventListener('resize', function () { clearTimeout(t); t = setTimeout(make, 200); });
+  }
+
   // segmented — переключатель (role=radio); onChange(значение атрибута attr).
   function segmented(root, attr, onChange) {
     root.addEventListener('click', function (e) {
@@ -866,9 +1018,25 @@
       };
     })();
 
+    // «Показать все / Свернуть» — в шапке кандидатов; пока длинный список
+    // листается (шапка ушла вверх, карточка на экране), кнопка плавает.
+    // «Свернуть» возвращает к началу карточки, а не в середину обращений.
     var CAND_TOP = 3, candAll = false, candOpen = {};
+    var candCard = document.getElementById('cand-card');
     var candMore = document.getElementById('cand-more');
-    candMore.addEventListener('click', function () { candAll = !candAll; renderCands(true); });
+    var floatCand = floater(candMore);
+    var candHead = 'below', candBody = 'below';
+    function candFloat() {
+      floatCand(candAll && candHead === 'above' && candBody === 'in', candHead === 'hidden' || candBody === 'hidden');
+    }
+    watchPos(candCard.querySelector('.card-head'), function (p) { candHead = p; candFloat(); }, true);
+    watchPos(candCard, function (p) { candBody = p; candFloat(); });
+    candMore.addEventListener('click', function () {
+      candAll = !candAll;
+      renderCands(true);
+      candFloat();
+      if (!candAll) scrollToEl(candCard);
+    });
 
     function renderCands(force) {
       var card = document.getElementById('cand-card');
@@ -969,23 +1137,16 @@
       load(false);
     }
 
-    // Шапка ушла за верх экрана — пауза и обновление плавают в углу, чтобы
-    // остановить список, не возвращаясь наверх.
-    // Элемент переносится в body: у карточки backdrop-filter, и position:
-    // fixed внутри неё считался бы от карточки, а не от окна.
+    // Шапка ушла под верхнюю панель — пауза, обновление и «к фильтрам»
+    // плавают в углу: остановить список и вернуться, не листая наверх.
     var liveCtl = document.querySelector('#access-main .live-ctl');
-    var liveHome = liveCtl.parentNode;
-    function floatLive(away) {
-      if (away === liveCtl.classList.contains('float')) return;
-      liveCtl.classList.toggle('float', away);
-      document.body.classList.toggle('live-float', away);
-      (away ? document.body : liveHome).appendChild(liveCtl);
-    }
-    if ('IntersectionObserver' in window) {
-      new IntersectionObserver(function (es) {
-        floatLive(!es[0].isIntersecting && es[0].boundingClientRect.top < 0);
-      }).observe(liveHome);
-    }
+    var floatLive = floater(liveCtl);
+    watchPos(document.querySelector('#access-main .card-head'), function (pos) {
+      floatLive(pos === 'above', pos === 'hidden');
+    }, true);
+    document.getElementById('acc-top').addEventListener('click', function () {
+      scrollToEl(document.querySelector('#access-main .access-tools'));
+    });
 
     // Остановка автообновления (списки не прыгают, пока смотришь) и разовое
     // обновление.
@@ -1054,7 +1215,7 @@
         load(true);
         timer = setInterval(poll, ACCESS_POLL_MS);
       },
-      leave: function () { clearInterval(timer); floatLive(false); }
+      leave: function () { clearInterval(timer); floatLive(false, true); floatCand(false, true); }
     };
   })();
 

@@ -663,13 +663,17 @@ h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .01em; }
 .live.stopped { color: var(--warn); }
 .live.stopped i { background: var(--warn); box-shadow: 0 0 8px rgb(251 191 36 / 0.5); }
 
-.live-ctl { display: inline-flex; align-items: center; gap: 6px; }
+.live-ctl { display: inline-flex; flex: none; align-items: center; gap: 6px; }
+.live-ctl:not(.float) .only-float { display: none; }
+.float-ph { display: inline-block; flex: none; visibility: hidden; }
+.float-ghost { position: absolute !important; z-index: -1 !important; margin: 0 !important; overflow: hidden; box-sizing: border-box; animation: none !important; pointer-events: none; }
+.ghosting { isolation: isolate; }
+.live { white-space: nowrap; }
+#access-main .card-head, .cand-card .card-head { flex-wrap: wrap; }
 .live-ctl .live { margin-right: 4px; }
 .live-ctl.float {
   position: fixed;
-  right: 16px;
-  bottom: 16px;
-  z-index: 25;
+  z-index: 9; /* под верхней панелью (10) */
   padding: 7px 8px 7px 14px;
   border: 1px solid var(--line-strong);
   border-radius: 999px;
@@ -677,12 +681,24 @@ h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .01em; }
   box-shadow: 0 14px 40px rgb(0 0 0 / 0.55);
   -webkit-backdrop-filter: blur(14px);
   backdrop-filter: blur(14px);
-  animation: float-in .3s cubic-bezier(.2, .9, .3, 1.2) both;
+  animation: live-skin .38s cubic-bezier(.2, .85, .25, 1) both;
 }
-.live-float .toasts { bottom: 72px; }
-@keyframes float-in { from { opacity: 0; transform: translateY(16px) scale(.94); } }
+.cand-more.float {
+  position: fixed;
+  z-index: 9; /* под верхней панелью (10) */
+  background: rgb(12 12 14 / 0.82);
+  border-color: rgb(251 191 36 / 0.4);
+  box-shadow: 0 14px 40px rgb(0 0 0 / 0.55);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  animation: float-skin .38s ease-out both;
+}
+/* Плавающая версия проявляется: фон, рамка и тень — без сдвига (сдвиг — FLIP в floater). */
+@keyframes live-skin { from { padding: 0; background-color: transparent; border-color: transparent; box-shadow: none; } }
+@keyframes float-skin { from { background-color: transparent; border-color: transparent; box-shadow: none; } }
 .icon-btn {
   display: inline-grid;
+  flex: none;
   place-items: center;
   width: 28px;
   height: 28px;
@@ -1064,7 +1080,7 @@ h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .01em; }
 .cand .facts { display: flex; flex-wrap: wrap; gap: 6px; }
 .cand .chooser { flex-basis: 100%; padding: 8px 0 0; border: 0; background: transparent; }
 .cand.leaving, .acc-row.leaving { animation: row-out .35s ease-in forwards; }
-.cand-more { margin-top: 10px; }
+.cand-card .card-head .cand-more { margin-left: auto; }
 .chip-btn { font: inherit; font-size: 13px; cursor: pointer; transition: border-color .2s, color .2s; }
 .chip-btn::after { content: " ▾"; font-size: 10px; }
 .chip-btn[aria-expanded="true"]::after { content: " ▴"; }
