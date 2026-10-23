@@ -1,6 +1,6 @@
 ---
 # Версия routerd = релиз на GitHub (тег v<версия>).
-routerd_version: "0.4.7"
+routerd_version: "0.4.8"
 routerd_release_base: "https://github.com/volkserg/rpi5-gorouter/releases/download"
 # Архив routerd-*-linux-arm64.tar.gz с машины, где запускается Ansible
 # (make dist) — вместо релиза. Пусто — релиз routerd_version.
