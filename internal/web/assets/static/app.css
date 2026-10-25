@@ -1167,6 +1167,22 @@ h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .01em; }
   .acc-row .ago { grid-area: ago; justify-self: end; }
   .acc-row .act { grid-area: act; }
   .access-tools .search { max-width: none; flex-basis: 100%; }
+  /* Компактно на узком экране — без серой строки подробностей: она
+     открывается стрелкой (или режимом «Развёрнуто»). */
+  .res:not(.open) .meta { display: none; }
+  /* Плотнее: маршрут — только точкой у туннеля, без IP устройства, меньше отступы. */
+  .acc-row { padding: 6px 10px 6px 12px; }
+  .acc-row .route { padding: 0; border: 0; background: none; font-size: 0; }
+  .acc-row .route:not(.tunnel) { display: none; }
+  .acc-row .dev .ip { display: none; }
+}
+
+.filters-toggle { display: none; }
+@media (max-width: 640px) {
+  .filters-toggle { display: inline-flex; margin-bottom: 12px; }
+  #access-main:not(.filters-open) .access-tools,
+  #access-main:not(.filters-open) .acc-summary,
+  #access-main:not(.filters-open) .legend { display: none; }
 }
 
 /* --- Обзор: сервисы и внешний адрес --- */

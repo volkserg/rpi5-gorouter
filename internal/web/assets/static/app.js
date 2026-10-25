@@ -915,7 +915,10 @@
       rowsBox.querySelectorAll('.res-more.maybe').forEach(function (t) {
         var box = t.closest('.res');
         var over = function (e) { return e && e.scrollWidth > e.clientWidth + 1; };
-        var need = box.classList.contains('open') || over(box.querySelector('.name')) || over(box.querySelector('.meta'));
+        var meta = box.querySelector('.meta');
+        // Скрытая (узкий экран, «Компактно») строка подробностей — тоже повод для стрелки.
+        var need = box.classList.contains('open') || over(box.querySelector('.name')) || over(meta) ||
+          (meta && !meta.offsetWidth);
         t.classList.toggle('shown', !!need);
       });
     }
@@ -1254,8 +1257,18 @@
     watchPos(document.querySelector('#access-main .card-head'), function (pos) {
       floatLive(pos === 'above', pos === 'hidden');
     }, true);
+    // «Фильтры» на телефоне раскрывают фильтры, сводку и легенду.
+    var accMain = document.getElementById('access-main');
+    var filtersBtn = document.getElementById('acc-filters');
+    filtersBtn.addEventListener('click', function () {
+      var on = accMain.classList.toggle('filters-open');
+      filtersBtn.setAttribute('aria-expanded', on ? 'true' : 'false');
+      filtersBtn.textContent = on ? 'Скрыть фильтры' : 'Фильтры';
+    });
     document.getElementById('acc-top').addEventListener('click', function () {
-      scrollToEl(document.querySelector('#access-main .access-tools'));
+      // Фильтры свёрнуты (телефон) — к кнопке «Фильтры».
+      var tools = accMain.querySelector('.access-tools');
+      scrollToEl(tools.offsetParent ? tools : filtersBtn);
     });
 
     // Остановка автообновления (списки не прыгают, пока смотришь) и разовое
