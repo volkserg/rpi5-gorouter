@@ -97,3 +97,30 @@ form .btn { margin-top: 6px; }
   .stage { gap: 18px; }
   .lock { width: 72px; height: 96px; }
 }
+
+/* «Дыхание» подсветки на странице входа. Анимируются радиус и яркость
+   градиента (переменные @property), а не transform/opacity слоя: так у
+   подсветки нет отдельного слоя видеокарты, и размытие карточки над ней не
+   рассинхронизируется (иначе проступал мерцающий квадрат границ слоя).
+   Коробка — с запасом: градиент на пике не упирается в её края. */
+@property --halo-r { syntax: "<length>"; inherits: false; initial-value: 320px; }
+@property --halo-a { syntax: "<number>"; inherits: false; initial-value: 1; }
+
+.halo {
+  width: 800px;
+  height: 800px;
+  margin: -400px 0 0 -400px;
+  border-radius: 0;
+  background: radial-gradient(circle var(--halo-r) at 50% 50%,
+    rgb(96 165 250 / calc(0.16 * var(--halo-a))),
+    rgb(96 165 250 / calc(0.05 * var(--halo-a))) 55%,
+    transparent);
+  animation: halo-grow 1.6s ease-out both, halo-breathe 6s ease-in-out 1.6s infinite;
+}
+
+@keyframes halo-grow { from { --halo-r: 224px; --halo-a: 0; } }
+@keyframes halo-breathe { 50% { --halo-r: 340px; --halo-a: 0.65; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .halo { animation: none; }
+}
