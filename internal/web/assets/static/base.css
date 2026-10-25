@@ -205,6 +205,58 @@ body {
 
 code, .mono { font: var(--mono); }
 
+/* Замок: страница входа и приветственная заставка панели. */
+.lock {
+  width: 96px;
+  height: 128px;
+  overflow: visible;
+  filter: drop-shadow(0 0 18px var(--accent-glow));
+  animation: lock-in 0.8s cubic-bezier(.2, .8, .2, 1) both;
+}
+
+.lock .shackle {
+  fill: none;
+  stroke: url(#metal);
+  stroke-width: 9;
+  stroke-linecap: round;
+  transform: translateY(-14px);
+  animation: shackle-close 0.45s cubic-bezier(.6, 0, .4, 1.4) 0.75s forwards;
+}
+
+.lock .body { fill: url(#bodyfill); stroke: rgb(96 165 250 / 0.55); stroke-width: 1.5; }
+.lock .keyhole { fill: var(--accent); animation: keyhole 2.8s ease-in-out 1.3s infinite; }
+
+.lock .flash {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: flash 0.7s ease-out 1.15s;
+}
+
+.lock.denied .body { stroke: var(--error); transition: stroke .2s; }
+.lock.denied .keyhole { fill: var(--error); }
+
+.lock.unlocked { filter: drop-shadow(0 0 22px rgb(52 211 153 / 0.45)); }
+.lock.unlocked .shackle { animation: shackle-open 0.45s cubic-bezier(.4, -0.4, .4, 1) forwards; }
+.lock.unlocked .body { stroke: var(--ok); }
+.lock.unlocked .keyhole { fill: var(--ok); animation: none; }
+
+@keyframes lock-in { from { opacity: 0; transform: translateY(14px) scale(.88); } }
+@keyframes shackle-close { to { transform: translateY(0); } }
+@keyframes shackle-open { from { transform: translateY(0); } to { transform: translateY(-14px); } }
+@keyframes flash {
+  0% { opacity: .9; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.35); }
+}
+@keyframes keyhole { 50% { opacity: .45; } }
+@media (prefers-reduced-motion: reduce) {
+  .lock .shackle { transform: none; }
+  .lock.unlocked .shackle { transform: translateY(-14px); }
+}
+
 @keyframes halo-in { from { opacity: 0; transform: scale(.7); } }
 @keyframes rise { from { opacity: 0; transform: translateY(28px) scale(.98); filter: blur(4px); } }
 @keyframes notice-in { from { opacity: 0; transform: translateY(-6px); } }

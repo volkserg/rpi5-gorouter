@@ -4,6 +4,31 @@
   var reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   var POLL_MS = 5000;
 
+  // --- Приветствие ------------------------------------------------------------
+  // Показывать ли — решает intro.js в <head> (класс with-intro у <html>).
+  // Замок сам открывается, заставка растворяется, панель всплывает. Щелчок
+  // или клавиша — пропуск.
+  (function intro() {
+    var root = document.documentElement;
+    var box = document.getElementById('intro');
+    if (!box) return;
+    if (!root.classList.contains('with-intro')) { box.remove(); return; }
+    var lock = box.querySelector('.lock');
+    var t1 = setTimeout(function () { lock.classList.add('unlocked'); }, 700);
+    var t2 = setTimeout(done, 1300);
+    function done() {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      document.removeEventListener('keydown', done);
+      lock.classList.add('unlocked');
+      box.classList.add('done');
+      root.classList.remove('with-intro');
+      setTimeout(function () { box.remove(); }, 700);
+    }
+    box.addEventListener('click', done);
+    document.addEventListener('keydown', done);
+  })();
+
   // --- Запросы к API ---------------------------------------------------------
 
   // api(метод, путь, тело) → Promise<JSON>. Без сессии — на страницу входа.
@@ -817,7 +842,15 @@
       if (r.timeout) c.appendChild(el('span', 'to', '  ⏱ ' + r.timeout));
       if (r.refused) c.appendChild(el('span', 'rf', '  ⊘ ' + r.refused));
       if (r.nodata) c.appendChild(el('span', 'nd', '  ∅ ' + r.nodata));
-      box.appendChild(c);
+      // «Проверить» — этот ресурс и порт строки (первый, если их несколько).
+      var chk = el('a', 'out-check', 'Проверить');
+      var p = r.ports && r.ports[0];
+      chk.href = '#check?target=' + encodeURIComponent(r.resource) + (p ? '&port=' + p : '');
+      chk.title = 'Проверить ' + r.resource + (p ? ':' + p : '') + ' напрямую и через туннель';
+      var line = el('div', 'out-line');
+      line.appendChild(c);
+      line.appendChild(chk);
+      box.appendChild(line);
       return box;
     }
 
@@ -1313,6 +1346,18 @@
       port = Number(v);
     });
 
+    // setPort — выбрать порт из ссылки (#check?target=…&port=…): 443 и 80 —
+    // кнопками, другой — в поле «другой».
+    function setPort(p) {
+      var v = p === 443 || p === 80 ? String(p) : 'other';
+      document.querySelectorAll('#check-port button').forEach(function (b) {
+        b.setAttribute('aria-checked', b.getAttribute('data-port') === v ? 'true' : 'false');
+      });
+      portOther.hidden = v !== 'other';
+      portOther.querySelector('input').value = v === 'other' ? p : '';
+      port = p;
+    }
+
     function pathPanel(id, p, running) {
       var box = document.getElementById(id);
       var body = box.querySelector('.path-body');
@@ -1518,6 +1563,8 @@
       enter: function (params) {
         if (params && params.get('target')) {
           form.target.value = params.get('target');
+          var pp = Number(params.get('port'));
+          if (pp >= 1 && pp <= 65535) setPort(pp);
           run(params.get('target'), port);
         } else {
           form.target.focus({ preventScroll: true });

@@ -62,6 +62,8 @@
         if (response.ok) {
           // Замок открывается, затем переход в панель.
           lock.classList.add('unlocked');
+          // Замок уже открылся здесь — приветствие панели не повторяет его.
+          try { sessionStorage.setItem('routerd.intro', 'skip'); } catch (e) { /* без хранилища */ }
           setTimeout(function () { location.replace('/'); }, reducedMotion ? 0 : 550);
           return;
         }

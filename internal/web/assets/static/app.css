@@ -3,6 +3,35 @@ body { padding-bottom: 48px; }
 
 .halo { top: 18%; }
 
+/* --- Приветствие: замок открывается, заставка растворяется --- */
+
+.intro { display: none; }
+html.with-intro .intro, .intro.done {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 18px;
+  background: radial-gradient(circle at 50% 46%, rgb(96 165 250 / 0.12), transparent 42%), var(--bg);
+  cursor: pointer;
+  /* Если app.js не запустился — заставка уходит сама. */
+  animation: intro-away .5s ease 3s forwards;
+}
+.intro .lock { animation: lock-in .5s cubic-bezier(.2, .8, .2, 1) both; }
+.intro .lock .shackle { transform: none; animation: none; }
+.intro .lock.unlocked .shackle { animation: shackle-open .45s cubic-bezier(.4, -0.4, .4, 1) forwards; }
+.intro .lock .flash { animation-delay: .3s; }
+.intro .lock .keyhole { animation: none; }
+.intro .lock.unlocked .body, .intro .lock.unlocked .keyhole { transition: stroke .3s, fill .3s; }
+.intro-name { font-size: 15px; font-weight: 600; letter-spacing: .14em; color: var(--muted); animation: notice-in .5s ease-out .15s both; }
+.intro.done { opacity: 0; visibility: hidden; transition: opacity .55s ease, visibility 0s .55s; animation: none; }
+.intro.done .lock { filter: drop-shadow(0 0 30px rgb(52 211 153 / 0.55)); transition: filter .4s; }
+/* Пока заставка — анимации появления панели ждут и стартуют, когда она уходит. */
+html.with-intro .topbar, html.with-intro .reveal { animation-play-state: paused; }
+@keyframes intro-away { to { opacity: 0; visibility: hidden; } }
+
 .muted { color: var(--muted); }
 
 /* --- Верхняя панель --- */
@@ -874,7 +903,10 @@ h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .01em; }
   padding: 9px 12px 9px 14px;
   border-bottom: 1px solid var(--line);
   font-size: 13.5px;
-  animation: row-in .35s cubic-bezier(.2, .8, .2, 1) both;
+  /* backwards, не both: после появления анимация снимается целиком —
+     удержанный transform оставлял строку отдельным слоем, и при наведении
+     она подрагивала на долю пикселя. */
+  animation: row-in .35s cubic-bezier(.2, .8, .2, 1) backwards;
   animation-delay: calc(min(var(--n, 0), 24) * 14ms);
 }
 .acc-row:last-child { border-bottom: 0; }
@@ -956,8 +988,6 @@ h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .01em; }
 .ip-pop-names a { color: var(--text); text-decoration: underline dotted; text-underline-offset: 3px; overflow-wrap: anywhere; }
 .ip-pop-names a:hover { color: var(--accent); }
 .ip-pop-note { padding-top: 8px; border-top: 1px solid var(--line); color: var(--muted); }
-.ip-pop-check { color: var(--accent); text-decoration: none; font-weight: 600; }
-.ip-pop-check:hover { text-decoration: underline; }
 .ip-pop.accent, .ip-pop.accent::before { border-color: rgb(96 165 250 / 0.35); }
 .ip-pop.accent .ip-pop-title { color: var(--accent); }
 @keyframes pop-cloud { from { opacity: 0; transform: translateY(-4px) scale(.92); } }
@@ -989,7 +1019,16 @@ h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .01em; }
 
 .outcome { display: grid; gap: 4px; min-width: 0; }
 .bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--field); }
-.bar span { height: 100%; transform-origin: left; animation: grow .6s cubic-bezier(.2, .8, .2, 1) both; }
+.bar span { height: 100%; transform-origin: left; animation: grow .6s cubic-bezier(.2, .8, .2, 1) backwards; }
+.ip-pop-check { color: var(--accent); text-decoration: none; font-weight: 600; }
+.ip-pop-check:hover { text-decoration: underline; }
+.out-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.out-line .counts { flex: 1; min-width: 0; }
+/* Приглушение — цветом, не opacity: прозрачность меняла сглаживание текста,
+   и надпись подрагивала при подсветке строки. */
+.out-check { flex: none; font-size: 11.5px; color: rgb(139 147 161 / 0.6); text-decoration: none; transition: color .2s; }
+.acc-row:hover .out-check, .out-check:focus-visible { color: var(--muted); }
+.out-check:hover { color: var(--accent); text-decoration: underline; }
 .counts { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .counts .to { color: var(--error); }
 .counts .rf { color: var(--refused); }
