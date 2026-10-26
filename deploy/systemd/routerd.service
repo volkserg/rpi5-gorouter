@@ -19,8 +19,9 @@ StateDirectory=routerd
 # /run/routerd/api.sock — API для веб-интерфейса (группа routerd-web).
 RuntimeDirectory=routerd
 RuntimeDirectoryMode=0755
-# Сверка ключей цепочки DNS в pihole.toml (PIHOLE_MANAGE).
-ReadWritePaths=-/etc/pihole
+# Сверка ключей цепочки DNS в pihole.toml (PIHOLE_MANAGE); списки VPN и
+# DNS override из веб-интерфейса (запись файла и блокировка рядом с ним).
+ReadWritePaths=-/etc/pihole -/usr/local/etc/router_service
 
 # Права: root нужен для управления юнитами по D-Bus, остальное урезано.
 # CAP_DAC_OVERRIDE, CAP_CHOWN, CAP_FOWNER — только для атомарной правки
