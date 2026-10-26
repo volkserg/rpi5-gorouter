@@ -1,6 +1,6 @@
 namespace: volkserg
 name: rpi5_gorouter
-version: 0.4.11
+version: 0.4.12
 readme: README.md
 authors:
   - volkserg
